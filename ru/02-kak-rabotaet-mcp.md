@@ -55,8 +55,10 @@ MCP работает поверх JSON-RPC, а физически сообщен
 
 ```yaml
 spring.main.banner-mode: off
-logging.pattern.console: ""  # если логи идут в stdout, перенаправьте в stderr
+logging.file.name: /dev/stderr   # Linux: логи уходят в stderr, stdout чист для JSON-RPC
 ```
+
+> **Примечание:** Streamable HTTP заменил устаревший SSE-транспорт в спецификации MCP 2025 года. Если встретите SSE в старых туториалах — знайте, что сейчас правильно использовать Streamable HTTP.
 
 ## Жизненный цикл
 
@@ -65,6 +67,7 @@ sequenceDiagram
     participant H as Host
     participant C as MCP Client
     participant S as MCP Server
+    participant L as LLM
 
     H->>C: запустить сервер
     C->>S: initialize (capabilities)
@@ -74,20 +77,20 @@ sequenceDiagram
     S-->>C: [getSlowQueries, getSchema, ...]
     Note over C: регистрирует tools в ChatClient
     H->>C: запрос пользователя
-    C->>LLM: промпт + список tools
-    LLM->>C: нужно вызвать getSlowQueries
+    C->>L: промпт + список tools
+    L-->>C: нужно вызвать getSlowQueries
     C->>S: tools/call (getSlowQueries)
     S-->>C: результат
-    C->>LLM: результат tool + исходный промпт
-    LLM->>C: финальный ответ
+    C->>L: результат tool + исходный промпт
+    L-->>C: финальный ответ
     C-->>H: ответ пользователю
 ```
 
 Разберём по шагам:
 
-1. **`initialize`** — клиент и сервер обмениваются capabilities. Сервер говорит: «У меня есть tools, resources и prompts». Клиент отвечает: «Принято, я умеешь с ними работать».
+1. **`initialize`** — клиент и сервер обмениваются capabilities. Сервер говорит: «У меня есть tools, resources и prompts». Клиент подтверждает: возможности сервера приняты.
 2. **`tools/list`** — клиент запрашивает список доступных инструментов. Это происходит один раз при подключении (или при получении нотификации `tools/listChanged`).
-3. **Регистрация в ChatClient** — полученные инструменты мапятся в function callbacks. Теперь LLM может их вызывать.
+3. **Регистрация в ChatClient** — здесь начинается магия Spring AI (не часть протокола MCP!). MCP-клиент получает список tools и мапит их в function callbacks внутри `ChatClient`. Теперь LLM может их вызывать.
 4. **Запрос к LLM** — каждый запрос включает описание доступных инструментов. LLM анализирует промпт и решает: ответить самой или вызвать tool.
 5. **`tools/call`** — если LLM выбрала tool, клиент выполняет вызов на сервере и возвращает результат обратно в LLM.
 6. **Финальный ответ** — LLM обрабатывает результат tool и формирует понятный человеку ответ.
@@ -101,3 +104,9 @@ npx @modelcontextprotocol/inspector
 ```
 
 Инспектор подключается к вашему серверу, показывает список tools/resources/prompts и позволяет вызывать их вручную — без LLM, без хоста, просто JSON-RPC запросы и ответы. Экономит часы отладки.
+
+---
+
+Теперь, когда мы разобрались с архитектурой и протоколом, пора перейти к практике. В следующей части мы напишем работающий MCP-сервер на Spring Boot и на живых примерах увидим, как Tools, Resources и Prompts работают в реальном коде.
+
+> **Документация:** [спецификация MCP](https://spec.modelcontextprotocol.io) и [Spring AI MCP reference](https://docs.spring.io/spring-ai/reference/2.0/api/mcp/mcp-annotations-server.html).
