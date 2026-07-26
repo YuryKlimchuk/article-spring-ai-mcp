@@ -35,64 +35,154 @@
     - Каждый запрос к LLM включает описание инструментов → LLM решает
     - `tools/call` → MCP-клиент выполняет → результат в LLM → финальный ответ
 
-### 3. Примеры реальных задач (600 слов) — сквозной сценарий
+### 3. Примеры реальных задач (800 слов) — два сквозных сценария
 
-Три кейса объединены в один сценарий: разработчик получает задачу → анализирует проблему → изучает примеры → вникает в модуль.
+**Контекст:** банковский ретейл, три микросервиса:
 
-- **Кейс 1: Анализ медленных запросов PostgreSQL — Tool**
-  - Концепт: **Tool** — LLM вызывает функцию.
-  - Проблема: DBA тратит часы на ручной анализ pg_stat_statements. AI не имеет доступа к БД.
-  - Решение: Tool `getSlowQueries(limit)` с `@Tool` и jdbcTemplate, запрос `ORDER BY total_exec_time DESC LIMIT ?`.
-  - Результат: разработчик спрашивает «что тормозит?» → LLM вызывает tool → таблица из 5 запросов с `total_exec_time` и `query_text`.
+| Сервис | БД | Ключевые таблицы | Что делает |
+|---|---|---|---|
+| `payment-service` | `payments_db` | `transactions`, `settlements`, `payment_methods` | Платёжные операции, эквайринг |
+| `product-transaction-service` | `product_tx_db` | `card_orders`, `application_steps` | Жизненный цикл продукта: заявки на карты, выпуск |
+| `back-office-service` | `backoffice_db` | `compliance_checks`, `approval_requests` | Проверки compliance, одобрения, ручные решения |
 
-- **Кейс 2: Доступ к схеме БД и OpenAPI-спеке — Resource**
-  - Концепт: **Resource** — живые данные на сервере, загружаются хостом.
-  - Проблема: разработчик пишет код для нового модуля, но схема БД и контракты API лежат на сервере. Копировать руками — устареют через день.
-  - Решение: MCP-сервер экспонирует актуальные `schema.sql` и `openapi.yaml` как Resources. Хост читает их через `resource/read` и вставляет в контекст LLM — она всегда видит свежую версию.
+Метрики — Prometheus + Grafana, логи — OpenSearch, деплои — Jenkins.
 
-- **Кейс 3: Онбординг нового разработчика — Prompt**
-  - Концепт: **Prompt** — готовый набор сообщений для чата.
-  - Проблема: новый разработчик тратит дни, чтобы разобраться в модулях проекта. Хочется мгновенного погружения с контекстом.
-  - Решение: Prompt-шаблон `onboard-module` с параметром `{module}` возвращает `messages[]`: «Объясни модуль {module} с учётом его зависимостей, точек расширения и конвенций кода». Пользователь выбирает prompt → host вставляет сообщения в чат → LLM генерирует персонализированный онбординг-документ.
+#### Сценарий 1 (ручной): Саппорт — клиент не может открыть карту
 
-### 4. Реализация на Spring Boot (800 слов) — код + конфигурация
+**Проблема:** клиент звонит в банк: «Пытаюсь открыть виртуальную карту в приложении, три раза нажал, каждый раз ошибка на последнем шаге». Саппорт открывает чат и расследует сам, без разработчиков.
 
+| Тип | Название | Источник | Что делает |
+|---|---|---|---|
+| **Tool** | `getUserCards(userId)` | `product_tx_db` | Есть ли у клиента активная карта: `SELECT * FROM mcp_api.v_card_orders WHERE user_id = ? AND status = 'ACTIVE'` |
+| **Tool** | `getApplicationSteps(applicationId)` | `product_tx_db` | На каком шаге заявка упала: `SELECT step, status, error_code FROM mcp_api.v_application_steps` |
+| **Tool** | `getRecentAppErrors(userId, minutes)` | OpenSearch | Ошибки в логах по userId и сервису |
+| **Tool** | `getPendingCompliance(userId)` | `backoffice_db` | Зависшие compliance-проверки: `SELECT * FROM mcp_api.v_pending_compliance WHERE user_id = ?` |
+| **Resource** | `card-application-flow` | Файл на сервере | Схема шагов: заявка → KYC → скоринг → compliance → активация |
+| **Prompt** | `investigate-card-issue` | — | «Клиент не может открыть карту. Проверь статус заявки, найди ошибки, объясни причину и скажи, что делать клиенту.» |
+
+**Диалог:** саппорт сообщает userId → LLM вызывает `getUserCards` (нет активных карт, заявка на шаге compliance) → `getApplicationSteps` (compliance check: FAILED, таймаут) → `getRecentAppErrors` (три таймаута BackOfficeServiceClient) → `getPendingCompliance` (проверка #887 висит PENDING). LLM отвечает: «Заявка зависла на проверке compliance — back-office не отвечает. Дежурная команда уже поднята по алёрту, после восстановления заявка дообработается автоматически. Клиенту ничего делать не нужно.»
+
+**Что демонстрирует:** Tool вызываются LLM для получения живых данных из БД и логов. Resource (схема шагов) загружается хостом до начала диалога — LLM понимает контекст процесса. Prompt структурирует диалог для конкретной задачи саппорта.
+
+#### Сценарий 2 (автоматический): Алёрт — платежи встали
+
+**Проблема:** ночь. Alertmanager: `payment-service p99_latency > 5s`. Никто не жмёт кнопок — хост получает вебхук и запускает авто-расследование.
+
+| Тип | Название | Источник | Что делает |
+|---|---|---|---|
+| **Tool** | `getSlowQueries(service, minutes, limit)` | `payments_db`, `pg_stat_statements` | Топ тяжёлых запросов через `mcp_api.v_slow_queries` |
+| **Tool** | `getBlockingSessions()` | `payments_db`, `pg_stat_activity` | Кто кого блокирует через `mcp_api.v_blocking_sessions` |
+| **Tool** | `getServiceMetrics(service, metric, minutes)` | Prometheus | `p99_latency`, `db_connections_active`, `http_errors` |
+| **Tool** | `getRecentDeploys(service)` | Jenkins | Последние деплои: версия, автор, время |
+| **Tool** | `getServiceErrors(service, minutes)` | OpenSearch | Топ ошибок в логах |
+| **Resource** | `payment-db-schema` | `payments_db`, `information_schema` | DDL таблиц `transactions`, `settlements`, индексы |
+| **Resource** | `alert-runbook-payment` | Файл на сервере | Runbook для алёрта `payment-high-latency` |
+| **Prompt** | `auto-investigate-payment` | — | «Сработал алёрт. Проверь метрики, БД, логи, деплои. Найди первопричину. Предложи action. Формат: диагноз → доказательства → решение.» |
+
+**Поток:** вебхук → хост активирует prompt + подгружает Resources (DDL, runbook) → LLM вызывает `getServiceMetrics` (рост latency до 5.2s, connections: 97/100) → `getBlockingSessions` (pid 8732 держит RowExclusiveLock на `transactions`, 55 сессий ждут) → `getSlowQueries` (`UPDATE transactions SET status = 'SETTLED' WHERE batch_id = ?` — mean_time 4.8s) → `getServiceErrors` (450× "could not obtain lock"). LLM выдаёт: «🔒 Блокировка таблицы transactions. Pid 8732 держит ло c > 5 минут на batch settlement. Предлагаю: (1) `pg_terminate_backend(8732)`, (2) индекс `CREATE INDEX ON transactions(batch_id) WHERE status = 'PENDING'`, (3) увеличить connection pool.»
+
+**Что демонстрирует:** полная автономия — от алёрта до диагноза и action без участия человека. LLM выступает агентом: сама решает, какие Tool вызвать и в каком порядке. Resource дают контекст (DDL + runbook), Prompt структурирует ответ.
+
+#### Безопасность: отдельная схема mcp_api, только VIEW, только SELECT
+
+Оба сценария используют единый подход к безопасности на уровне БД:
+
+```
+Пользователь БД:  mcp_readonly
+Схема:            mcp_api (отдельная от public)
+Права:            только SELECT на VIEW в схеме mcp_api
+                  REVOKE ALL на public, pg_catalog
+                  CONNECTION LIMIT = 5
+```
+
+**Что это даёт:**
+- **LLM не видит PII** — VIEW маскирует чувствительные колонки (номер карты, email, IP)
+- **LLM не может менять данные** — роль `mcp_readonly` не имеет прав на INSERT/UPDATE/DELETE
+- **LLM не видит чужие таблицы** — `REVOKE ALL ON SCHEMA public`, доступ только к `mcp_api.*`
+- **MCP-сервер взломан → ущерб ограничен** — даже скомпрометированный сервер не может удалить данные
+- **Аудит** — все запросы от `mcp_readonly` логируются стандартными средствами PostgreSQL
+
+Пример VIEW для сценария с блокировками:
+
+```sql
+CREATE SCHEMA mcp_api;
+CREATE ROLE mcp_readonly WITH LOGIN PASSWORD '***' CONNECTION LIMIT 5;
+GRANT USAGE ON SCHEMA mcp_api TO mcp_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA mcp_api TO mcp_readonly;
+REVOKE ALL ON SCHEMA public FROM mcp_readonly;
+
+-- VIEW: блокировки — только своя БД, обрезанные запросы
+CREATE VIEW mcp_api.v_blocking_sessions AS
+SELECT
+    blocked.pid              AS blocked_pid,
+    LEFT(blocked.query, 200) AS blocked_query_short,
+    blocked.wait_event_type  AS blocked_wait_type,
+    blocking.pid             AS blocking_pid,
+    LEFT(blocking.query, 200) AS blocking_query_short,
+    (blocked.query_start - blocking.query_start) AS blocking_duration
+FROM pg_stat_activity blocked
+JOIN pg_stat_activity blocking
+    ON pg_blocking_pids(blocked.pid) @> ARRAY[blocking.pid]
+WHERE blocked.pid != blocking.pid
+  AND blocked.wait_event_type = 'Lock'
+  AND blocked.datname = 'payments_db';
+
+-- VIEW: транзакции — без PII, только 30 дней
+CREATE VIEW mcp_api.v_transactions AS
+SELECT
+    id, status, amount, merchant_category,
+    LEFT(merchant_name, 3) || '***' AS merchant_masked,
+    created_at, batch_id, settling_status, error_code
+FROM public.transactions
+WHERE created_at > NOW() - INTERVAL '30 days';
+```
+
+Эта модель — не просто «лучшая практика», а необходимость: LLM не должна иметь доступ к сырым данным клиентов банка. MCP-сервер + VIEW решают эту проблему на уровне архитектуры.
+
+### 4. Реализация на Spring Boot (900 слов) — код + конфигурация
+
+- **Структура проекта**:
+  - Maven multi-module: `mcp-server` (сервер с Tools/Resources/Prompts) + `mcp-client` (хост с ChatClient)
+  - Три PostgreSQL БД: `payments_db`, `product_tx_db`, `backoffice_db` — в Docker Compose
+  - В каждой БД — схема `mcp_api` с VIEW, роль `mcp_readonly`, тестовые данные в `init.sql`
 - **Зависимости (pom.xml)**:
   - spring-boot-starter-parent 4.1.0
-  - spring-boot-starter-web
   - spring-ai-starter-mcp-server-webmvc 2.0.x
-  - postgresql (для кейса с БД)
-- **Конфигурация** application.yml:
-    - MCP server: протокол STREAMABLE, порт
-    - datasource для PostgreSQL
-    - logging.level для демонстрации цепочки вызовов
+  - spring-ai-starter-mcp-client 2.0.x
+  - spring-boot-starter-jdbc + postgresql
+  - spring-boot-starter-web (для REST-контроллера и Streamable HTTP)
+- **Конфигурация application.yml (MCP Server)**:
+    - MCP server: протокол `STREAMABLE`, порт
+    - Три datasource для `payments_db`, `product_tx_db`, `backoffice_db`
+    - Пользователь БД: `mcp_readonly` (только SELECT по схеме `mcp_api`)
+    - `logging.level` для демонстрации цепочки вызовов
 - **Код MCP-сервера** — все три концепта:
-    - **Tool** — `@McpTool` + `@McpToolParam` на сервисе
-    - **Resource** — `@Bean` → `List<McpServerFeatures.SyncResourceSpecification>` (builder)
-    - **Prompt** — `@Bean` → `List<McpServerFeatures.SyncPromptSpecification>`, возвращает `Message[]`
+    - **Tool** — `@McpTool` + `@McpToolParam` на сервисах. Пример: `getBlockingSessions()` выполняет `SELECT * FROM mcp_api.v_blocking_sessions`, `getSlowQueries(service, limit)` — `SELECT * FROM mcp_api.v_slow_queries`
+    - **Resource** — `@Bean` → `List<McpServerFeatures.SyncResourceSpecification>` (builder). Пример: `payment-db-schema` читает DDL из `information_schema`, `card-application-flow` отдаёт текстовую схему
+    - **Prompt** — `@Bean` → `List<McpServerFeatures.SyncPromptSpecification>`, возвращает `Message[]` с параметрами. Пример: `investigate-card-issue` для саппорта, `auto-investigate-payment` для алёрта
 - **Конфигурация MCP-клиента**:
-    - Зависимость `spring-ai-starter-mcp-client`
     - Адрес MCP-сервера в application.yml
     - Автоконфигурация регистрирует tools как function callbacks в `ChatClient`
-- **Запуск и тестирование**: REST-контроллер с `ChatClient`, параметр `mcp=true/false`.
-- **Демонстрация "до и после"**:
-  - `curl .../ask?mcp=false` → *«Я не имею доступа к вашей базе данных, но могу предположить...»* (hallucination)
-  - `curl .../ask?mcp=true` → таблица из 5 real slow queries с `total_exec_time` и `query_text`
-  - Разница в одном окне: без MCP — гадание, с MCP — факты.
-- **GitHub-репозиторий** с полным кодом (ссылка).
+    - REST-контроллер с двумя endpoint-ами: `/support/ask` (сценарий 1, выбор prompt вручную) и `/alert/webhook` (сценарий 2, авто-расследование)
+- **Демонстрация "до и после" на сценарии 2**:
+  - `curl .../alert/ask?mcp=false` → *«Я не имею доступа к вашей базе данных, но могу предположить...»* (hallucination или общие слова)
+  - `curl .../alert/ask?mcp=true` → полный диагноз: блокировка pid 8732, 55 ожидающих сессий, запрос-виновник, action plan
+  - Разница в одном окне: без MCP — гадание, с MCP — факты и конкретный план действий.
+- **GitHub-репозиторий** с полным кодом и Docker Compose (ссылка).
 
 ### 5. Итоги (~250 слов) — выводы + что дальше
 
 - **Выводы**:
-    - MCP убирает vendor-lock: один сервер с инструментами обслуживает любых клиентов
-    - Spring AI делает интеграцию тривиальной: `@Tool` для действий, `@Bean` для ресурсов и промптов
-    - MCP-сервер — контролируемый шлюз: LLM видит только разрешённые операции
-- **Безопасность**: MCP-сервер — обычное Spring-приложение, защищается через Spring Security (OAuth2, JWT).
+    - MCP убирает vendor-lock: один сервер с инструментами обслуживает и саппорта, и автоматику
+    - Spring AI делает интеграцию тривиальной: `@McpTool` для действий, `@Bean` для ресурсов и промптов
+    - MCP-сервер — контролируемый шлюз: LLM видит только разрешённые операции через `mcp_api` VIEW
+    - Безопасность на уровне БД (отдельная схема, только SELECT) — не опционально, а архитектурная необходимость для продакшена
+- **Безопасность**: MCP-сервер — обычное Spring-приложение, дополнительно защищается через Spring Security (OAuth2, JWT). Но основной рубеж — на уровне PostgreSQL: `mcp_readonly` с доступом только к `mcp_api.*` VIEW.
 - **Что дальше**:
-    - MCP Hub — каталог готовых серверов
-    - OAuth 2.1 в спецификации MCP
-    - Мониторинг, rate limiting, аудит вызовов
-    - Ссылки: спецификация MCP, документация Spring AI
+    - MCP Hub — каталог готовых серверов для популярных систем
+    - OAuth 2.1 в спецификации MCP для удалённых подключений
+    - Мониторинг, rate limiting, аудит вызовов MCP
+    - Ссылки: спецификация MCP, документация Spring AI MCP, репозиторий с кодом
 
 ---
 
