@@ -11,7 +11,7 @@
 - **Как решали раньше**: function calling от провайдеров встраивал описание инструментов прямо в запрос к LLM, но инструменты были «прибиты» к хосту.
 - **Решение — MCP**: открытый стандарт от Anthropic. Один сервер с инструментами — любые клиенты. LLM видит только разрешённые операции, а не сырой доступ к БД.
 - **Роль Spring AI 2.0**: автоконфигурация, `@McpTool`/`@McpToolParam` для действий, `@McpResource` и `@McpPrompt` аннотации или программная регистрация через `@Bean`.
-- **Анонс**: разберем архитектуру MCP и напишем свой сервер на Spring Boot 4 + Spring AI 2.0.
+- **Анонс**: разберем архитектуру MCP и реализацию сервера на Spring Boot 4 + Spring AI 2.0.
 
 ### 2. Как работает MCP (500–600 слов) — архитектура + схема
 
@@ -42,7 +42,7 @@
 | Сервис | БД | Ключевые таблицы | Что делает |
 |---|---|---|---|
 | `payment-service` | `payments_db` | `transactions`, `settlements`, `payment_methods` | Платёжные операции, эквайринг |
-| `product-transaction-service` | `product_tx_db` | `card_orders`, `application_steps` | Жизненный цикл продукта: заявки на карты, выпуск |
+| `product-service` | `product_db` | `card_orders`, `application_steps` | Жизненный цикл продукта: заявки на карты, выпуск |
 | `back-office-service` | `backoffice_db` | `compliance_checks`, `approval_requests` | Проверки compliance, одобрения, ручные решения |
 
 Метрики — Prometheus + Grafana, логи — OpenSearch, деплои — Jenkins.
@@ -53,12 +53,12 @@
 
 | Тип | Название | Источник | Что делает |
 |---|---|---|---|
-| **Tool** | `getUserCards(userId)` | `product_tx_db` | Есть ли у клиента активная карта: `SELECT * FROM mcp_api.v_card_orders WHERE user_id = ? AND status = 'ACTIVE'` |
-| **Tool** | `getApplicationSteps(applicationId)` | `product_tx_db` | На каком шаге заявка упала: `SELECT step, status, error_code FROM mcp_api.v_application_steps` |
+| **Tool** | `getUserCards(userId)` | `product_db` | Есть ли у клиента активная карта: `SELECT * FROM mcp_api.v_card_orders WHERE user_id = ? AND status = 'ACTIVE'` |
+| **Tool** | `getApplicationSteps(applicationId)` | `product_db` | На каком шаге заявка упала: `SELECT step, status, error_code FROM mcp_api.v_application_steps` |
 | **Tool** | `getRecentAppErrors(userId, minutes)` | OpenSearch | Ошибки в логах по userId и сервису |
 | **Tool** | `getPendingCompliance(userId)` | `backoffice_db` | Зависшие compliance-проверки: `SELECT * FROM mcp_api.v_pending_compliance WHERE user_id = ?` |
-| **Resource** | `card-application-flow` | Файл на сервере | Схема шагов: заявка → KYC → скоринг → compliance → активация |
-| **Prompt** | `investigate-card-issue` | — | «Клиент не может открыть карту. Проверь статус заявки, найди ошибки, объясни причину и скажи, что делать клиенту.» |
+| **Resource** | `card-opening-flow` | Файл на сервере | Схема шагов: заявка → KYC → скоринг → compliance → активация |
+| **Prompt** | `investigate-card-opening` | — | «Клиент {userId} не может открыть карту (back-office: {backOfficeCardId}). Проверь статус заявки по схеме из ресурса, найди ошибки, объясни причину.» |
 
 **Диалог:** саппорт сообщает userId → LLM вызывает `getUserCards` (нет активных карт, заявка на шаге compliance) → `getApplicationSteps` (compliance check: FAILED, таймаут) → `getRecentAppErrors` (три таймаута BackOfficeServiceClient) → `getPendingCompliance` (проверка #887 висит PENDING). LLM отвечает: «Заявка зависла на проверке compliance — back-office не отвечает. Дежурная команда уже поднята по алёрту, после восстановления заявка дообработается автоматически. Клиенту ничего делать не нужно.»
 
@@ -75,13 +75,14 @@
 | **Tool** | `getServiceMetrics(service, metric, minutes)` | Prometheus | `p99_latency`, `db_connections_active`, `http_errors` |
 | **Tool** | `getRecentDeploys(service)` | Jenkins | Последние деплои: версия, автор, время |
 | **Tool** | `getServiceErrors(service, minutes)` | OpenSearch | Топ ошибок в логах |
+| **Tool** | `createJiraTicket(project, summary, description)` | Jira | Создать тикет: `POST /rest/api/2/issue` |
 | **Resource** | `payment-db-schema` | `payments_db`, `information_schema` | DDL таблиц `transactions`, `settlements`, индексы |
 | **Resource** | `alert-runbook-payment` | Файл на сервере | Runbook для алёрта `payment-high-latency` |
-| **Prompt** | `auto-investigate-payment` | — | «Сработал алёрт. Проверь метрики, БД, логи, деплои. Найди первопричину. Предложи action. Формат: диагноз → доказательства → решение.» |
+| **Prompt** | `auto-investigate-payment` | — | «Сработал алёрт. Проверь метрики, БД, K8s, логи, деплои. Найди первопричину. Предложи action. Создай тикет в Jira. Формат: диагноз → доказательства → решение.» |
 
-**Поток:** вебхук → хост активирует prompt + подгружает Resources (DDL, runbook) → LLM вызывает `getServiceMetrics` (рост latency до 5.2s, connections: 97/100) → `getBlockingSessions` (pid 8732 держит RowExclusiveLock на `transactions`, 55 сессий ждут) → `getSlowQueries` (`UPDATE transactions SET status = 'SETTLED' WHERE batch_id = ?` — mean_time 4.8s) → `getServiceErrors` (450× "could not obtain lock"). LLM выдаёт: «🔒 Блокировка таблицы transactions. Pid 8732 держит ло c > 5 минут на batch settlement. Предлагаю: (1) `pg_terminate_backend(8732)`, (2) индекс `CREATE INDEX ON transactions(batch_id) WHERE status = 'PENDING'`, (3) увеличить connection pool.»
+**Поток:** вебхук → хост активирует prompt + подгружает Resources (DDL, runbook) → LLM вызывает `getServiceMetrics` (рост latency до 5.2s) → `getPodRestarts` (3 рестарта, OOMKilled) → `getServiceMetrics` (connections: 97/100) → `getBlockingSessions` (pid 8732 держит RowExclusiveLock) → `getSlowQueries` (batch settlement, mean_time 4.8s) → `getServiceErrors` (450× "could not obtain lock") → `createJiraTicket` (тикет PAY-8872). LLM выдаёт: «🔒 OOM → рестарты → connection pool → блокировка. Предлагаю: (1) `pg_terminate_backend(8732)`, (2) `kubectl set resources --limits=memory=4Gi`, (3) JVM heap -Xms3g -Xmx3g, (4) индекс, (5) увеличить pool.»
 
-**Что демонстрирует:** полная автономия — от алёрта до диагноза и action без участия человека. LLM выступает агентом: сама решает, какие Tool вызвать и в каком порядке. Resource дают контекст (DDL + runbook), Prompt структурирует ответ.
+**Что демонстрирует:** полная автономия — от алёрта до диагноза, action plan и тикета в Jira без участия человека. LLM выступает агентом: сама решает, какие Tool вызвать и в каком порядке. Resource дают контекст (DDL + runbook), Prompt структурирует ответ.
 
 #### Безопасность: отдельная схема mcp_api, только VIEW, только SELECT
 
@@ -143,7 +144,7 @@ WHERE created_at > NOW() - INTERVAL '30 days';
 
 - **Структура проекта**:
   - Maven multi-module: `mcp-server` (сервер с Tools/Resources/Prompts) + `mcp-client` (хост с ChatClient)
-  - Три PostgreSQL БД: `payments_db`, `product_tx_db`, `backoffice_db` — в Docker Compose
+  - Три PostgreSQL БД: `payments_db`, `product_db`, `backoffice_db` — в Docker Compose
   - В каждой БД — схема `mcp_api` с VIEW, роль `mcp_readonly`, тестовые данные в `init.sql`
 - **Зависимости (pom.xml)**:
   - spring-boot-starter-parent 4.1.0
@@ -153,13 +154,13 @@ WHERE created_at > NOW() - INTERVAL '30 days';
   - spring-boot-starter-web (для REST-контроллера и Streamable HTTP)
 - **Конфигурация application.yml (MCP Server)**:
     - MCP server: протокол `STREAMABLE`, порт
-    - Три datasource для `payments_db`, `product_tx_db`, `backoffice_db`
+    - Три datasource для `payments_db`, `product_db`, `backoffice_db`
     - Пользователь БД: `mcp_readonly` (только SELECT по схеме `mcp_api`)
     - `logging.level` для демонстрации цепочки вызовов
 - **Код MCP-сервера** — все три концепта:
     - **Tool** — `@McpTool` + `@McpToolParam` на сервисах. Пример: `getBlockingSessions()` выполняет `SELECT * FROM mcp_api.v_blocking_sessions`, `getSlowQueries(service, limit)` — `SELECT * FROM mcp_api.v_slow_queries`
-    - **Resource** — `@Bean` → `List<McpServerFeatures.SyncResourceSpecification>` (builder). Пример: `payment-db-schema` читает DDL из `information_schema`, `card-application-flow` отдаёт текстовую схему
-    - **Prompt** — `@Bean` → `List<McpServerFeatures.SyncPromptSpecification>`, возвращает `Message[]` с параметрами. Пример: `investigate-card-issue` для саппорта, `auto-investigate-payment` для алёрта
+    - **Resource** — `@Bean` → `List<McpServerFeatures.SyncResourceSpecification>` (builder). Пример: `payment-db-schema` читает DDL из `information_schema`, `card-opening-flow` отдаёт текстовую схему
+    - **Prompt** — `@Bean` → `List<McpServerFeatures.SyncPromptSpecification>`, возвращает `Message[]` с параметрами. Пример: `investigate-card-opening` для саппорта, `auto-investigate-payment` для алёрта
 - **Конфигурация MCP-клиента**:
     - Адрес MCP-сервера в application.yml
     - Автоконфигурация регистрирует tools как function callbacks в `ChatClient`
