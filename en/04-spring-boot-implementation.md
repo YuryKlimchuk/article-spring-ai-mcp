@@ -1,6 +1,6 @@
 # Spring Boot Implementation
 
-> **Code on GitHub:** [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server), [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client). The code below is a skeleton with stubs; the full implementation is omitted for brevity.
+**Code on GitHub:** [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server), [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client). The code below is a skeleton with stubs; the full implementation is omitted for brevity.
 
 Now the code. All the tools, resources, and prompts from the scenarios.
 

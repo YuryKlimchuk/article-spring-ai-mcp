@@ -58,4 +58,4 @@ logging.file.name: /dev/stderr   # Linux. Windows: logging.file.name: NUL or a f
 
 Now let's move on to practice: two end-to-end scenarios from retail banking.
 
-> **Docs:** [MCP specification](https://spec.modelcontextprotocol.io) — full protocol description; [Spring AI MCP reference](https://docs.spring.io/spring-ai/reference/2.0/api/mcp/mcp-annotations-server.html) — how to wire the server into Spring Boot.
+**Docs:** [MCP specification](https://spec.modelcontextprotocol.io) — full protocol description; [Spring AI MCP reference](https://docs.spring.io/spring-ai/reference/2.0/api/mcp/mcp-annotations-server.html) — how to wire the server into Spring Boot.

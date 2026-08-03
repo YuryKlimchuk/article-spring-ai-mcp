@@ -1,13 +1,13 @@
 # Spring AI + MCP: Giving LLMs Safe Access to Your Systems
 
-> **TL;DR**
->
-> - **Problem:** LLMs are isolated from your systems — they can't check database slowdowns, call an API, or read logs.
-> - **Solution:** The Model Context Protocol (MCP) gives LLMs controlled access to tools, data, and workflows. One server, any client.
-> - **Implementation:** Spring AI 2.0 boils it down to three annotations: `@McpTool`, `@McpResource`, `@McpPrompt`. Fifteen lines of code per tool.
-> - **Result:** Support investigates incidents in a minute instead of an hour. Night-time alerts are triaged automatically. Zero code duplication across clients.
+**TL;DR**
 
-> 📦 **Source code:** [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server) · [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client)
+- **Problem:** LLMs are isolated from your systems — they can't check database slowdowns, call an API, or read logs.
+- **Solution:** The Model Context Protocol (MCP) gives LLMs controlled access to tools, data, and workflows. One server, any client.
+- **Implementation:** Spring AI 2.0 boils it down to three annotations: `@McpTool`, `@McpResource`, `@McpPrompt`. Fifteen lines of code per tool.
+- **Result:** Support investigates incidents in a minute instead of an hour. Night-time alerts are triaged automatically. Zero code duplication across clients.
+
+📦 **Source code:** [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server) · [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client)
 
 ## Introduction
 
