@@ -27,27 +27,30 @@
 Серверу нужен минимум — имя, протокол и порт:
 
 ```yaml
+server:
+  port: 8081
+
 spring:
   ai:
     mcp:
       server:
-        name: "Bank MCP Server"
+        name: Bank MCP Server
         protocol: STREAMABLE
-        streamable-http:
-          port: 8081
+        type: SYNC
 ```
 
-Клиенту — адрес сервера и модель:
+Клиенту — адрес сервера и модель. Транспорт задаётся разделом в конфигурации (`streamable-http`, `sse` или `stdio`), а не полем `type`:
 
 ```yaml
 spring:
   ai:
     mcp:
       client:
-        connections:
-          bank-server:
-            type: STREAMABLE
-            url: http://localhost:8081
+        type: SYNC
+        streamable-http:
+          connections:
+            bank-server:
+              url: http://localhost:8081
     ollama:
       base-url: http://localhost:11434
       chat:
@@ -174,129 +177,92 @@ public class BackOfficeTools {
 
 Ключевой момент: `description` в аннотациях — это то, что читает LLM при выборе инструмента. Пишите на естественном языке, не жалейте деталей.
 
-## Resources и Prompts: программная регистрация
+## Resources и Prompts: аннотации @McpResource и @McpPrompt
 
-Ресурсы и промпты статичны — объявляются через `@Bean`. Все три ресурса и оба промпта:
+Ресурсы и промпты объявляются декларативно — аннотациями `@McpResource` и `@McpPrompt` на методах компонента. Spring AI сам регистрирует их при старте:
 
 ```java
-@Configuration
+@Component
 public class McpResources {
 
-    @Bean
-    public List<McpServerFeatures.SyncResourceSpecification> mcpResources() {
-        return List.of(
-            // Сценарий 1: схема шагов
-            McpServerFeatures.SyncResourceSpecification.builder()
-                .resource(Resource.builder()
-                    .uri("card-opening-flow")
-                    .name("card-opening-flow")
-                    .description("Схема шагов оформления карты.")
-                    .mimeType("text/plain")
-                    .build())
-                .readHandler((exchange, request) -> new ReadResourceResult(List.of(
-                    new TextResourceContents(request.uri(), """
-                        1. APPLICATION_CREATED → 2. KYC_CHECK → 3. SCORING
-                        → 4. COMPLIANCE_CHECK (back-office) → 5. ACTIVATION
-                        Если зависла на шаге 4: getApplicationSteps + getPendingCompliance
-                        """, "text/plain")))
-                )
-                .build(),
+    @McpResource(uri = "card-opening-flow", name = "card-opening-flow",
+                 description = "Схема шагов оформления карты", mimeType = "text/plain")
+    public String cardOpeningFlow() {
+        return """
+            1. APPLICATION_CREATED → 2. KYC_CHECK → 3. SCORING
+            → 4. COMPLIANCE_CHECK (back-office) → 5. ACTIVATION
+            Если зависла на шаге 4: getApplicationSteps + getPendingCompliance
+            """;
+    }
 
-            // Сценарий 2: схема БД
-            McpServerFeatures.SyncResourceSpecification.builder()
-                .resource(Resource.builder()
-                    .uri("payment-db-schema")
-                    .name("payment-db-schema")
-                    .description("DDL таблиц transactions, settlements и индексы.")
-                    .mimeType("text/plain")
-                    .build())
-                .readHandler((exchange, request) -> new ReadResourceResult(List.of(
-                    new TextResourceContents(request.uri(), """
-                        CREATE TABLE transactions (id, status, batch_id, ...);
-                        CREATE INDEX idx_tx_batch_id ON transactions(batch_id);
-                        -- ВАЖНО: нет индекса на (batch_id, status)
-                        """, "text/plain")))
-                )
-                .build(),
+    @McpResource(uri = "payment-db-schema", name = "payment-db-schema",
+                 description = "DDL таблиц transactions, settlements и индексы", mimeType = "text/plain")
+    public String paymentDbSchema() {
+        return """
+            CREATE TABLE transactions (id, status, batch_id, ...);
+            CREATE INDEX idx_tx_batch_id ON transactions(batch_id);
+            -- ВАЖНО: нет индекса на (batch_id, status)
+            """;
+    }
 
-            // Сценарий 2: runbook алёрта
-            McpServerFeatures.SyncResourceSpecification.builder()
-                .resource(Resource.builder()
-                    .uri("alert-runbook-payment")
-                    .name("alert-runbook-payment")
-                    .description("Runbook для алёрта payment-high-latency.")
-                    .mimeType("text/plain")
-                    .build())
-                .readHandler((exchange, request) -> new ReadResourceResult(List.of(
-                    new TextResourceContents(request.uri(), """
-                        1. getServiceMetrics → 2. getPodRestarts → 3. getBlockingSessions
-                        → 4. getSlowQueries → 5. getRecentDeploys → 6. getServiceErrors
-                        → 7. createJiraTicket
-                        """, "text/plain")))
-                )
-                .build()
-        );
+    @McpResource(uri = "alert-runbook-payment", name = "alert-runbook-payment",
+                 description = "Runbook для алёрта payment-high-latency", mimeType = "text/plain")
+    public String alertRunbook() {
+        return """
+            1. getServiceMetrics → 2. getPodRestarts → 3. getBlockingSessions
+            → 4. getSlowQueries → 5. getRecentDeploys → 6. getServiceErrors
+            → 7. createJiraTicket
+            """;
     }
 }
 ```
 
 ```java
-@Configuration
+@Component
 public class McpPrompts {
 
-    @Bean
-    public List<McpServerFeatures.SyncPromptSpecification> mcpPrompts() {
-        return List.of(
-            // Сценарий 1: расследование проблемы с картой
-            McpServerFeatures.SyncPromptSpecification.builder()
-                .prompt(Prompt.builder()
-                    .name("investigate-card-opening")
-                    .description("Расследовать проблему с открытием карты")
-                    .addArgument("userId", "ID пользователя")
-                    .addArgument("backOfficeCardId", "ID back-office")
-                    .build())
-                .promptHandler((exchange, request) -> new GetPromptResult(List.of(
-                    new Message(Role.USER, new TextContent("""
-                        Клиент {userId} не может открыть карту.
-                        Back-office: {backOfficeCardId}.
-                        Используй схему из card-opening-flow.
-                        1. getUserCards → 2. getApplicationSteps
-                        → 3. getRecentAppErrors → 4. getPendingCompliance
-                        """))
-                )))
-                .build(),
+    @McpPrompt(name = "investigate-card-opening",
+               description = "Расследовать проблему с открытием карты")
+    public List<Message> investigateCardOpening(McpPromptRequest request) {
+        String userId = request.arguments().getOrDefault("userId", "unknown");
+        String backOfficeCardId = request.arguments().getOrDefault("backOfficeCardId", "unknown");
 
-            // Сценарий 2: автоматическое расследование алёрта
-            McpServerFeatures.SyncPromptSpecification.builder()
-                .prompt(Prompt.builder()
-                    .name("auto-investigate-payment")
-                    .description("Авто-расследование алёрта high-latency")
-                    .addArgument("service", "Имя сервиса")
-                    .addArgument("metric", "Название метрики")
-                    .addArgument("threshold", "Пороговое значение")
-                    .addArgument("currentValue", "Текущее значение")
-                    .build())
-                .promptHandler((exchange, request) -> new GetPromptResult(List.of(
-                    new Message(Role.USER, new TextContent("""
-                        🚨 {service} {metric} = {currentValue} (порог: {threshold})
-                        Проведи расследование по runbook.
-                        🔒 ПЕРВОПРИЧИНА: ...
-                        📊 ДОКАЗАТЕЛЬСТВА: ...
-                        ✅ ACTION PLAN: ...
-                        🎫 Тикет в Jira: ...
-                        """))
-                )))
-                .build()
-        );
+        return List.of(new Message(Role.USER, new TextContent(String.format("""
+            Клиент %s не может открыть карту.
+            Back-office: %s.
+            Используй схему из card-opening-flow.
+            1. getUserCards → 2. getApplicationSteps
+            → 3. getRecentAppErrors → 4. getPendingCompliance
+            """, userId, backOfficeCardId))));
+    }
+
+    @McpPrompt(name = "auto-investigate-payment",
+               description = "Авто-расследование алёрта high-latency")
+    public List<Message> autoInvestigatePayment(McpPromptRequest request) {
+        String service = request.arguments().getOrDefault("service", "unknown");
+        String metric = request.arguments().getOrDefault("metric", "unknown");
+        String threshold = request.arguments().getOrDefault("threshold", "unknown");
+        String currentValue = request.arguments().getOrDefault("currentValue", "unknown");
+
+        return List.of(new Message(Role.USER, new TextContent(String.format("""
+            🚨 %s %s = %s (порог: %s)
+            Проведи расследование по runbook.
+            🔒 ПЕРВОПРИЧИНА: ...
+            📊 ДОКАЗАТЕЛЬСТВА: ...
+            ✅ ACTION PLAN: ...
+            🎫 Тикет в Jira: ...
+            """, service, metric, currentValue, threshold))));
     }
 }
 ```
 
 Промпт не знает, какие tools доступны — он задаёт сценарий. LLM сама сопоставляет шаги с инструментами. Ресурсы дают ей контекст: схема БД помогает понять структуру таблиц, runbook — порядок действий, схема шагов заявки — на каком этапе какие tools нужны.
 
+> **Альтернативный подход:** если нужна более тонкая настройка, ресурсы и промпты можно зарегистрировать программно через `@Bean` с `McpServerFeatures.SyncResourceSpecification` и `McpServerFeatures.SyncPromptSpecification`. Но для большинства случаев аннотаций достаточно.
+
 ## Клиент: ChatClient + автоподключение tools
 
-Одна строка — и все tools с сервера зарегистрированы в `ChatClient`:
+`SyncMcpToolCallbackProvider` автоматически собирает все tool callbacks с MCP-серверов. Одна строка — и они зарегистрированы в `ChatClient`:
 
 ```java
 @Configuration
@@ -304,38 +270,38 @@ public class ChatClientConfig {
 
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder,
-                                  McpClientConnectionManager connectionManager) {
+                                  SyncMcpToolCallbackProvider toolCallbackProvider) {
         return builder
-            .defaultTools(connectionManager.getToolCallbacks())
+            .defaultTools(toolCallbackProvider.getToolCallbacks())
             .build();
     }
 }
 ```
 
-Контроллер саппорта: `readResource` для контекста, `getPrompt` для сценария, `chatClient.prompt()` для запуска:
+Клиентский контроллер саппорта — ничего специфичного для MCP, обычный Spring MVC:
 
 ```java
 @RestController
-@RequestMapping("/support")
 public class SupportController {
 
     private final ChatClient chatClient;
-    private final McpClientConnectionManager connectionManager;
 
-    @PostMapping("/ask")
+    public SupportController(ChatClient chatClient) {
+        this.chatClient = chatClient;
+    }
+
+    @PostMapping("/support/ask")
     public Map<String, Object> ask(
         @RequestParam String userId,
         @RequestParam String backOfficeCardId
     ) {
-        String flow = connectionManager.readResource("card-opening-flow");
-        List<Message> prompt = connectionManager.getPrompt(
-            "investigate-card-opening",
-            Map.of("userId", userId, "backOfficeCardId", backOfficeCardId)
-        );
-
         String response = chatClient.prompt()
-            .system(s -> s.text(flow))
-            .messages(prompt)
+            .user(String.format("""
+                Клиент %s не может открыть карту. Back-office: %s.
+                Используй схему из card-opening-flow.
+                1. getUserCards → 2. getApplicationSteps
+                → 3. getRecentAppErrors → 4. getPendingCompliance
+                """, userId, backOfficeCardId))
             .call()
             .content();
 
@@ -344,7 +310,7 @@ public class SupportController {
 }
 ```
 
-Три шага: ресурс, промпт, `ChatClient`. LLM сама решает, какие tools вызвать.
+Ресурсы и промпты с MCP-сервера подгружаются автоматически через протокол. `ChatClient` сам регистрирует доступные tools как tool callbacks и передаёт их LLM в каждом запросе. LLM сама решает, какие tools вызвать.
 
 ## До и после
 

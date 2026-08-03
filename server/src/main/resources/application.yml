@@ -1,0 +1,18 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: bank-mcp-server
+  ai:
+    mcp:
+      server:
+        name: Bank MCP Server
+        protocol: STREAMABLE
+        type: SYNC
+
+logging:
+  level:
+    com.hydroyura.mcp.server: DEBUG
+    io.modelcontextprotocol: DEBUG
+    org.springframework.ai.mcp: DEBUG

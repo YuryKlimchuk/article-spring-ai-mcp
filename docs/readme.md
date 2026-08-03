@@ -10,8 +10,8 @@
 - **Проблема — дублирование**: инструменты всегда жили внутри конкретного приложения. Написал интеграцию с PostgreSQL для своего бэкенда — для Claude Desktop пиши заново, для Copilot — третий раз. Переиспользования нет.
 - **Как решали раньше**: function calling от провайдеров встраивал описание инструментов прямо в запрос к LLM, но инструменты были «прибиты» к хосту.
 - **Решение — MCP**: открытый стандарт от Anthropic. Один сервер с инструментами — любые клиенты. LLM видит только разрешённые операции, а не сырой доступ к БД.
-- **Роль Spring AI 2.0**: автоконфигурация, `@McpTool`/`@McpToolParam` для действий, `@McpResource` и `@McpPrompt` аннотации или программная регистрация через `@Bean`.
-- **Анонс**: разберем архитектуру MCP и реализацию сервера на Spring Boot 4 + Spring AI 2.0.
+- **Роль Spring AI 2.0**: автоконфигурация, `@McpTool`/`@McpToolParam` для действий, `@McpResource` и `@McpPrompt` для ресурсов и промптов.
+- **Анонс**: разберем архитектуру MCP и реализацию сервера на Spring Boot + Spring AI 2.0.
 
 ### 2. Как работает MCP (500–600 слов) — архитектура + схема
 
@@ -31,7 +31,7 @@
     - `initialize` → Client и Server обмениваются capabilities
     - `initialized` → Client подтверждает готовность (notification)
     - `tools/list` → Client запрашивает инструменты (отдельный запрос)
-    - Spring AI регистрирует tools как function callbacks в `ChatClient`
+    - Spring AI регистрирует tools как tool callbacks в `ChatClient`
     - Каждый запрос к LLM включает описание инструментов → LLM решает
     - `tools/call` → MCP-клиент выполняет → результат в LLM → финальный ответ
 
@@ -147,7 +147,7 @@ WHERE created_at > NOW() - INTERVAL '30 days';
   - Три PostgreSQL БД: `payments_db`, `product_db`, `backoffice_db` — в Docker Compose
   - В каждой БД — схема `mcp_api` с VIEW, роль `mcp_readonly`, тестовые данные в `init.sql`
 - **Зависимости (pom.xml)**:
-  - spring-boot-starter-parent 4.1.0
+  - spring-boot-starter-parent 4.1.x
   - spring-ai-starter-mcp-server-webmvc 2.0.x
   - spring-ai-starter-mcp-client 2.0.x
   - spring-boot-starter-jdbc + postgresql
@@ -159,11 +159,11 @@ WHERE created_at > NOW() - INTERVAL '30 days';
     - `logging.level` для демонстрации цепочки вызовов
 - **Код MCP-сервера** — все три концепта:
     - **Tool** — `@McpTool` + `@McpToolParam` на сервисах. Пример: `getBlockingSessions()` выполняет `SELECT * FROM mcp_api.v_blocking_sessions`, `getSlowQueries(service, limit)` — `SELECT * FROM mcp_api.v_slow_queries`
-    - **Resource** — `@Bean` → `List<McpServerFeatures.SyncResourceSpecification>` (builder). Пример: `payment-db-schema` читает DDL из `information_schema`, `card-opening-flow` отдаёт текстовую схему
-    - **Prompt** — `@Bean` → `List<McpServerFeatures.SyncPromptSpecification>`, возвращает `Message[]` с параметрами. Пример: `investigate-card-opening` для саппорта, `auto-investigate-payment` для алёрта
+    - **Resource** — `@McpResource` на методе. Пример: `card-opening-flow` возвращает текстовую схему, `payment-db-schema` — DDL таблиц
+    - **Prompt** — `@McpPrompt` на методе, принимает `McpPromptRequest`, возвращает `Message[]` с параметрами. Пример: `investigate-card-opening` для саппорта, `auto-investigate-payment` для алёрта
 - **Конфигурация MCP-клиента**:
     - Адрес MCP-сервера в application.yml
-    - Автоконфигурация регистрирует tools как function callbacks в `ChatClient`
+    - Автоконфигурация регистрирует tools как tool callbacks в `ChatClient`
     - REST-контроллер с двумя endpoint-ами: `/support/ask` (сценарий 1, выбор prompt вручную) и `/alert/webhook` (сценарий 2, авто-расследование)
 - **Демонстрация "до и после" на сценарии 2**:
   - `curl .../alert/ask?mcp=false` → *«Я не имею доступа к вашей базе данных, но могу предположить...»* (hallucination или общие слова)
@@ -175,7 +175,7 @@ WHERE created_at > NOW() - INTERVAL '30 days';
 
 - **Выводы**:
     - MCP убирает vendor-lock: один сервер с инструментами обслуживает и саппорта, и автоматику
-    - Spring AI делает интеграцию тривиальной: `@McpTool` для действий, `@Bean` для ресурсов и промптов
+    - Spring AI делает интеграцию тривиальной: `@McpTool` для действий, `@McpResource` и `@McpPrompt` для ресурсов и промптов
     - MCP-сервер — контролируемый шлюз: LLM видит только разрешённые операции через `mcp_api` VIEW
     - Безопасность на уровне БД (отдельная схема, только SELECT) — не опционально, а архитектурная необходимость для продакшена
 - **Безопасность**: MCP-сервер — обычное Spring-приложение, дополнительно защищается через Spring Security (OAuth2, JWT). Но основной рубеж — на уровне PostgreSQL: `mcp_readonly` с доступом только к `mcp_api.*` VIEW.
