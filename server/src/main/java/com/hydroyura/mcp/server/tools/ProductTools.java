@@ -10,28 +10,28 @@ import java.util.Map;
 @Component
 public class ProductTools {
 
-    @McpTool(description = "Получить список карт и заявок пользователя")
+    @McpTool(description = "Get user cards and card applications")
     public List<Map<String, Object>> getUserCards(
-        @McpToolParam(description = "ID пользователя") String userId
+        @McpToolParam(description = "User ID") String userId
     ) {
         // SELECT * FROM mcp_api.v_card_orders WHERE user_id = ?
         return List.of(Map.of("application_id", "app_9912", "step", "4/5"));
     }
 
-    @McpTool(description = "Получить шаги обработки заявки на карту")
+    @McpTool(description = "Get application processing steps for a card application")
     public List<Map<String, Object>> getApplicationSteps(
-        @McpToolParam(description = "ID заявки") String applicationId
+        @McpToolParam(description = "Application ID") String applicationId
     ) {
         // SELECT * FROM mcp_api.v_application_steps WHERE application_id = ?
         return List.of(Map.of("step", "COMPLIANCE_CHECK", "status", "FAILED"));
     }
 
-    @McpTool(description = "Получить последние ошибки по пользователю из логов")
+    @McpTool(description = "Get recent application errors from logs for a user")
     public List<Map<String, Object>> getRecentAppErrors(
-        @McpToolParam(description = "ID пользователя") String userId,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "User ID") String userId,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
-        // POST /_search по userId и сервису
+        // POST /_search by userId and service
         return List.of(Map.of("error", "BackOfficeServiceClient timeout", "count", 3));
     }
 }

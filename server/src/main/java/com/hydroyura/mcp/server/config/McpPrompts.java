@@ -15,16 +15,15 @@ import java.util.List;
 public class McpPrompts {
 
     @McpPrompt(name = "investigate-card-opening",
-               description = "Расследовать проблему с открытием карты")
+               description = "Investigate card opening issue for a customer")
     public GetPromptResult investigateCardOpening(GetPromptRequest request) {
         String userId = request.arguments().getOrDefault("userId", "unknown").toString();
         String backOfficeCardId = request.arguments().getOrDefault("backOfficeCardId", "unknown").toString();
 
         var message = PromptMessage.builder(Role.USER,
             new TextContent(String.format("""
-                Клиент %s не может открыть карту.
-                Back-office: %s.
-                Используй схему из card-opening-flow.
+                Customer %s cannot open a card. Back-office: %s.
+                Use the card-opening-flow resource for context.
                 1. getUserCards → 2. getApplicationSteps
                 → 3. getRecentAppErrors → 4. getPendingCompliance
                 """, userId, backOfficeCardId))).build();
@@ -33,7 +32,7 @@ public class McpPrompts {
     }
 
     @McpPrompt(name = "auto-investigate-payment",
-               description = "Авто-расследование алёрта high-latency")
+               description = "Automated investigation of high-latency alert")
     public GetPromptResult autoInvestigatePayment(GetPromptRequest request) {
         String service = request.arguments().getOrDefault("service", "unknown").toString();
         String metric = request.arguments().getOrDefault("metric", "unknown").toString();
@@ -42,12 +41,12 @@ public class McpPrompts {
 
         var message = PromptMessage.builder(Role.USER,
             new TextContent(String.format("""
-                🚨 %s %s = %s (порог: %s)
-                Проведи расследование по runbook.
-                🔒 ПЕРВОПРИЧИНА: ...
-                📊 ДОКАЗАТЕЛЬСТВА: ...
+                🚨 ALERT: %s %s = %s (threshold: %s)
+                Investigate following the runbook.
+                🔒 ROOT CAUSE: ...
+                📊 EVIDENCE: ...
                 ✅ ACTION PLAN: ...
-                🎫 Тикет в Jira: ...
+                🎫 Jira ticket: ...
                 """, service, metric, currentValue, threshold))).build();
 
         return GetPromptResult.builder(List.of(message)).build();

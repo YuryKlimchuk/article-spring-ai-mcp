@@ -1,6 +1,6 @@
 # Реализация на Spring Boot
 
-Теория и сценарии — это хорошо, но давайте посмотрим на код. В этой главе — черновик реализации: все tools, resources и промпты из сценариев, но только Spring AI-специфичные фрагменты.
+Теория и сценарии — это хорошо, но давайте посмотрим на код. В этой главе — черновик реализации: все tools, resources и промпты из сценариев, но только Spring AI-специфичные фрагменты. Код на английском — так `description` аннотаций читает LLM.
 
 ## Зависимости
 
@@ -55,7 +55,7 @@ spring:
       base-url: http://localhost:11434
       chat:
         options:
-          model: qwen3:14b
+          model: qwen2.5:1.5b
 ```
 
 Никакого ручного JSON-RPC. Транспорт — на автоконфигурации.
@@ -65,99 +65,99 @@ spring:
 Все семь инструментов из сценария 2 и четыре из сценария 1 — по одному шаблону: `@McpTool` на методе, `@McpToolParam` на параметрах. Ниже — полный набор с заглушками вместо реальных запросов к БД и API.
 
 ```java
-// Сценарий 2: расследование алёрта
+// Scenario 2: alert investigation
 @Component
 public class PaymentTools {
 
-    @McpTool(description = "Получить список блокирующих сессий в БД платежей.")
+    @McpTool(description = "Get list of blocking sessions in the payments database")
     public List<Map<String, Object>> getBlockingSessions() {
         // SELECT * FROM mcp_api.v_blocking_sessions
         return List.of(Map.of("blocking_pid", 8732, "blocked_count", 55));
     }
 
-    @McpTool(description = "Получить топ самых медленных SQL-запросов.")
+    @McpTool(description = "Get top slow SQL queries from pg_stat_statements")
     public List<Map<String, Object>> getSlowQueries(
-        @McpToolParam(description = "Название БД") String database,
-        @McpToolParam(description = "Окно в минутах") Integer minutes,
-        @McpToolParam(description = "Лимит результатов") Integer limit
+        @McpToolParam(description = "Database name") String database,
+        @McpToolParam(description = "Time window in minutes") Integer minutes,
+        @McpToolParam(description = "Max results") Integer limit
     ) {
         // SELECT * FROM mcp_api.v_slow_queries LIMIT ?
         return List.of(Map.of("query_sample", "UPDATE transactions...", "mean_time_ms", 4800));
     }
 
-    @McpTool(description = "Получить метрики сервиса из Prometheus.")
+    @McpTool(description = "Get service metrics from Prometheus: p99_latency, db_connections_active, http_errors")
     public Map<String, Object> getServiceMetrics(
-        @McpToolParam(description = "Сервис") String service,
-        @McpToolParam(description = "Метрика: p99_latency, db_connections_active, ...") String metric,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "Service name") String service,
+        @McpToolParam(description = "Metric: p99_latency, db_connections_active, ...") String metric,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
         // GET /api/v1/query?query={metric}{service}[{minutes}m]
         return Map.of("metric", metric, "value", 5200);
     }
 
-    @McpTool(description = "Получить рестарты подов из Kubernetes API.")
+    @McpTool(description = "Get pod restarts from Kubernetes API")
     public List<Map<String, Object>> getPodRestarts(
-        @McpToolParam(description = "Сервис") String service,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "Service name") String service,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
         // GET /api/v1/pods?labelSelector=app={service}
         return List.of(Map.of("reason", "OOMKilled", "count", 3, "time", "00:13"));
     }
 
-    @McpTool(description = "Получить последние ошибки сервиса из логов OpenSearch.")
+    @McpTool(description = "Get recent error logs from OpenSearch for a service")
     public List<Map<String, Object>> getServiceErrors(
-        @McpToolParam(description = "Сервис") String service,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "Service name") String service,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
-        // POST /_search с query по service и timestamp
+        // POST /_search with query by service and timestamp
         return List.of(Map.of("error", "could not obtain lock", "count", 450));
     }
 
-    @McpTool(description = "Получить список последних деплоев из Jenkins.")
+    @McpTool(description = "Get recent deployments from Jenkins")
     public List<Map<String, Object>> getRecentDeploys(
-        @McpToolParam(description = "Сервис") String service
+        @McpToolParam(description = "Service name") String service
     ) {
         // GET /job/{service}/api/json
         return List.of(Map.of("version", "v2.7.0", "status", "SUCCESS"));
     }
 
-    @McpTool(description = "Создать тикет в Jira по результатам расследования.")
+    @McpTool(description = "Create a Jira ticket with investigation results")
     public Map<String, Object> createJiraTicket(
-        @McpToolParam(description = "Ключ проекта") String project,
-        @McpToolParam(description = "Краткое описание") String summary,
-        @McpToolParam(description = "Полный отчёт") String description
+        @McpToolParam(description = "Project key") String project,
+        @McpToolParam(description = "Ticket summary") String summary,
+        @McpToolParam(description = "Full investigation report") String description
     ) {
         // POST /rest/api/2/issue
         return Map.of("ticketId", project + "-8872", "status", "created");
     }
 }
 
-// Сценарий 1: расследование проблемы с картой
+// Scenario 1: card issue investigation
 @Component
 public class ProductTools {
 
-    @McpTool(description = "Получить список карт и заявок пользователя.")
+    @McpTool(description = "Get user cards and card applications")
     public List<Map<String, Object>> getUserCards(
-        @McpToolParam(description = "ID пользователя") String userId
+        @McpToolParam(description = "User ID") String userId
     ) {
         // SELECT * FROM mcp_api.v_card_orders WHERE user_id = ?
         return List.of(Map.of("application_id", "app_9912", "step", "4/5"));
     }
 
-    @McpTool(description = "Получить шаги обработки заявки на карту.")
+    @McpTool(description = "Get application processing steps for a card application")
     public List<Map<String, Object>> getApplicationSteps(
-        @McpToolParam(description = "ID заявки") String applicationId
+        @McpToolParam(description = "Application ID") String applicationId
     ) {
         // SELECT * FROM mcp_api.v_application_steps WHERE application_id = ?
         return List.of(Map.of("step", "COMPLIANCE_CHECK", "status", "FAILED"));
     }
 
-    @McpTool(description = "Получить последние ошибки по пользователю из логов.")
+    @McpTool(description = "Get recent application errors from logs for a user")
     public List<Map<String, Object>> getRecentAppErrors(
-        @McpToolParam(description = "ID пользователя") String userId,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "User ID") String userId,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
-        // POST /_search по userId и сервису
+        // POST /_search by userId and service
         return List.of(Map.of("error", "BackOfficeServiceClient timeout", "count", 3));
     }
 }
@@ -165,9 +165,9 @@ public class ProductTools {
 @Component
 public class BackOfficeTools {
 
-    @McpTool(description = "Получить зависшие compliance-проверки для пользователя.")
+    @McpTool(description = "Get pending compliance checks for a user")
     public List<Map<String, Object>> getPendingCompliance(
-        @McpToolParam(description = "ID пользователя") String userId
+        @McpToolParam(description = "User ID") String userId
     ) {
         // SELECT * FROM mcp_api.v_pending_compliance WHERE user_id = ?
         return List.of(Map.of("check_id", 887, "status", "PENDING"));
@@ -186,27 +186,27 @@ public class BackOfficeTools {
 public class McpResources {
 
     @McpResource(uri = "card-opening-flow", name = "card-opening-flow",
-                 description = "Схема шагов оформления карты", mimeType = "text/plain")
+                 description = "Card application step flow diagram", mimeType = "text/plain")
     public String cardOpeningFlow() {
         return """
             1. APPLICATION_CREATED → 2. KYC_CHECK → 3. SCORING
             → 4. COMPLIANCE_CHECK (back-office) → 5. ACTIVATION
-            Если зависла на шаге 4: getApplicationSteps + getPendingCompliance
+            If stuck at step 4: use getApplicationSteps + getPendingCompliance
             """;
     }
 
     @McpResource(uri = "payment-db-schema", name = "payment-db-schema",
-                 description = "DDL таблиц transactions, settlements и индексы", mimeType = "text/plain")
+                 description = "DDL for transactions, settlements tables and indexes", mimeType = "text/plain")
     public String paymentDbSchema() {
         return """
             CREATE TABLE transactions (id, status, batch_id, ...);
             CREATE INDEX idx_tx_batch_id ON transactions(batch_id);
-            -- ВАЖНО: нет индекса на (batch_id, status)
+            -- IMPORTANT: no index on (batch_id, status)
             """;
     }
 
     @McpResource(uri = "alert-runbook-payment", name = "alert-runbook-payment",
-                 description = "Runbook для алёрта payment-high-latency", mimeType = "text/plain")
+                 description = "Runbook for payment-high-latency alert", mimeType = "text/plain")
     public String alertRunbook() {
         return """
             1. getServiceMetrics → 2. getPodRestarts → 3. getBlockingSessions
@@ -222,36 +222,41 @@ public class McpResources {
 public class McpPrompts {
 
     @McpPrompt(name = "investigate-card-opening",
-               description = "Расследовать проблему с открытием карты")
-    public List<Message> investigateCardOpening(McpPromptRequest request) {
-        String userId = request.arguments().getOrDefault("userId", "unknown");
-        String backOfficeCardId = request.arguments().getOrDefault("backOfficeCardId", "unknown");
+               description = "Investigate card opening issue for a customer")
+    public GetPromptResult investigateCardOpening(GetPromptRequest request) {
+        String userId = request.arguments().getOrDefault("userId", "unknown").toString();
+        String backOfficeCardId = request.arguments().getOrDefault("backOfficeCardId", "unknown").toString();
 
-        return List.of(new Message(Role.USER, new TextContent(String.format("""
-            Клиент %s не может открыть карту.
-            Back-office: %s.
-            Используй схему из card-opening-flow.
-            1. getUserCards → 2. getApplicationSteps
-            → 3. getRecentAppErrors → 4. getPendingCompliance
-            """, userId, backOfficeCardId))));
+        var message = PromptMessage.builder(Role.USER,
+            new TextContent(String.format("""
+                Customer %s cannot open a card. Back-office: %s.
+                Use the card-opening-flow resource for context.
+                1. getUserCards → 2. getApplicationSteps
+                → 3. getRecentAppErrors → 4. getPendingCompliance
+                """, userId, backOfficeCardId))).build();
+
+        return GetPromptResult.builder(List.of(message)).build();
     }
 
     @McpPrompt(name = "auto-investigate-payment",
-               description = "Авто-расследование алёрта high-latency")
-    public List<Message> autoInvestigatePayment(McpPromptRequest request) {
-        String service = request.arguments().getOrDefault("service", "unknown");
-        String metric = request.arguments().getOrDefault("metric", "unknown");
-        String threshold = request.arguments().getOrDefault("threshold", "unknown");
-        String currentValue = request.arguments().getOrDefault("currentValue", "unknown");
+               description = "Automated investigation of high-latency alert")
+    public GetPromptResult autoInvestigatePayment(GetPromptRequest request) {
+        String service = request.arguments().getOrDefault("service", "unknown").toString();
+        String metric = request.arguments().getOrDefault("metric", "unknown").toString();
+        String threshold = request.arguments().getOrDefault("threshold", "unknown").toString();
+        String currentValue = request.arguments().getOrDefault("currentValue", "unknown").toString();
 
-        return List.of(new Message(Role.USER, new TextContent(String.format("""
-            🚨 %s %s = %s (порог: %s)
-            Проведи расследование по runbook.
-            🔒 ПЕРВОПРИЧИНА: ...
-            📊 ДОКАЗАТЕЛЬСТВА: ...
-            ✅ ACTION PLAN: ...
-            🎫 Тикет в Jira: ...
-            """, service, metric, currentValue, threshold))));
+        var message = PromptMessage.builder(Role.USER,
+            new TextContent(String.format("""
+                🚨 ALERT: %s %s = %s (threshold: %s)
+                Investigate following the runbook.
+                🔒 ROOT CAUSE: ...
+                📊 EVIDENCE: ...
+                ✅ ACTION PLAN: ...
+                🎫 Jira ticket: ...
+                """, service, metric, currentValue, threshold))).build();
+
+        return GetPromptResult.builder(List.of(message)).build();
     }
 }
 ```
@@ -297,8 +302,8 @@ public class SupportController {
     ) {
         String response = chatClient.prompt()
             .user(String.format("""
-                Клиент %s не может открыть карту. Back-office: %s.
-                Используй схему из card-opening-flow.
+                Customer %s cannot open a card. Back-office: %s.
+                Use the card-opening-flow resource for context.
                 1. getUserCards → 2. getApplicationSteps
                 → 3. getRecentAppErrors → 4. getPendingCompliance
                 """, userId, backOfficeCardId))
@@ -317,12 +322,12 @@ public class SupportController {
 Без MCP LLM гадает. С MCP — оперирует фактами:
 
 ```
-Без MCP:
-«Я не имею доступа к вашей базе данных или логам.
- Возможные причины: сбой, верификация, ограничения по карте.»
+Without MCP:
+«I don't have access to your database or logs.
+ Possible reasons: failure, verification, card limit.»
 
-С MCP:
-«Заявка app_9912 зависла на шаге COMPLIANCE_CHECK.
- Три таймаута BackOfficeServiceClient. Проверка #887 — PENDING.
- Дежурная команда уже поднята. Карта выпустится после восстановления.»
+With MCP:
+«Application app_9912 is stuck at COMPLIANCE_CHECK step.
+ Three BackOfficeServiceClient timeouts. Check #887 — PENDING.
+ On-call team already notified. Card will be issued after recovery.»
 ```

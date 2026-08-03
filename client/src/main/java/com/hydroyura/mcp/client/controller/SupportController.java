@@ -23,8 +23,8 @@ public class SupportController {
     ) {
         String response = chatClient.prompt()
             .user(String.format("""
-                Клиент %s не может открыть карту. Back-office: %s.
-                Используй схему из card-opening-flow.
+                Customer %s cannot open a card. Back-office: %s.
+                Use the card-opening-flow resource for context.
                 1. getUserCards → 2. getApplicationSteps
                 → 3. getRecentAppErrors → 4. getPendingCompliance
                 """, userId, backOfficeCardId))

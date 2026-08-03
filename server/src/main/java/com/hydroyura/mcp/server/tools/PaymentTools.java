@@ -10,7 +10,7 @@ import java.util.Map;
 @Component
 public class PaymentTools {
 
-    @McpTool(description = "Получить список блокирующих сессий в БД платежей")
+    @McpTool(description = "Get list of blocking sessions in the payments database")
     public List<Map<String, Object>> getBlockingSessions() {
         // SELECT * FROM mcp_api.v_blocking_sessions
         return List.of(Map.of(
@@ -20,11 +20,11 @@ public class PaymentTools {
         ));
     }
 
-    @McpTool(description = "Получить топ самых медленных SQL-запросов")
+    @McpTool(description = "Get top slow SQL queries from pg_stat_statements")
     public List<Map<String, Object>> getSlowQueries(
-        @McpToolParam(description = "Название БД") String database,
-        @McpToolParam(description = "Окно в минутах") Integer minutes,
-        @McpToolParam(description = "Лимит результатов") Integer limit
+        @McpToolParam(description = "Database name") String database,
+        @McpToolParam(description = "Time window in minutes") Integer minutes,
+        @McpToolParam(description = "Max results") Integer limit
     ) {
         // SELECT * FROM mcp_api.v_slow_queries LIMIT ?
         return List.of(Map.of(
@@ -34,47 +34,47 @@ public class PaymentTools {
         ));
     }
 
-    @McpTool(description = "Получить метрики сервиса из Prometheus: p99_latency, db_connections_active, http_errors")
+    @McpTool(description = "Get service metrics from Prometheus: p99_latency, db_connections_active, http_errors")
     public Map<String, Object> getServiceMetrics(
-        @McpToolParam(description = "Сервис") String service,
-        @McpToolParam(description = "Метрика: p99_latency, db_connections_active, ...") String metric,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "Service name") String service,
+        @McpToolParam(description = "Metric: p99_latency, db_connections_active, ...") String metric,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
         // GET /api/v1/query?query={metric}{service}[{minutes}m]
         return Map.of("metric", metric, "value", 5200);
     }
 
-    @McpTool(description = "Получить последние ошибки сервиса из логов OpenSearch")
+    @McpTool(description = "Get recent error logs from OpenSearch for a service")
     public List<Map<String, Object>> getServiceErrors(
-        @McpToolParam(description = "Сервис") String service,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "Service name") String service,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
-        // POST /_search с query по service и timestamp
+        // POST /_search with query by service and timestamp
         return List.of(Map.of("error", "could not obtain lock", "count", 450));
     }
 
-    @McpTool(description = "Получить список последних деплоев из Jenkins")
+    @McpTool(description = "Get recent deployments from Jenkins")
     public List<Map<String, Object>> getRecentDeploys(
-        @McpToolParam(description = "Сервис") String service
+        @McpToolParam(description = "Service name") String service
     ) {
         // GET /job/{service}/api/json
         return List.of(Map.of("version", "v2.7.0", "status", "SUCCESS"));
     }
 
-    @McpTool(description = "Создать тикет в Jira по результатам расследования")
+    @McpTool(description = "Create a Jira ticket with investigation results")
     public Map<String, Object> createJiraTicket(
-        @McpToolParam(description = "Ключ проекта") String project,
-        @McpToolParam(description = "Краткое описание") String summary,
-        @McpToolParam(description = "Полный отчёт") String description
+        @McpToolParam(description = "Project key") String project,
+        @McpToolParam(description = "Ticket summary") String summary,
+        @McpToolParam(description = "Full investigation report") String description
     ) {
         // POST /rest/api/2/issue
         return Map.of("ticketId", project + "-8872", "status", "created");
     }
 
-    @McpTool(description = "Получить рестарты подов из Kubernetes API")
+    @McpTool(description = "Get pod restarts from Kubernetes API")
     public List<Map<String, Object>> getPodRestarts(
-        @McpToolParam(description = "Сервис") String service,
-        @McpToolParam(description = "Окно в минутах") Integer minutes
+        @McpToolParam(description = "Service name") String service,
+        @McpToolParam(description = "Time window in minutes") Integer minutes
     ) {
         // GET /api/v1/pods?labelSelector=app={service}
         return List.of(Map.of("reason", "OOMKilled", "count", 3, "time", "00:13"));

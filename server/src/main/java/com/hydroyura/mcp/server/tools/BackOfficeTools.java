@@ -10,9 +10,9 @@ import java.util.Map;
 @Component
 public class BackOfficeTools {
 
-    @McpTool(description = "Получить зависшие compliance-проверки для пользователя")
+    @McpTool(description = "Get pending compliance checks for a user")
     public List<Map<String, Object>> getPendingCompliance(
-        @McpToolParam(description = "ID пользователя") String userId
+        @McpToolParam(description = "User ID") String userId
     ) {
         // SELECT * FROM mcp_api.v_pending_compliance WHERE user_id = ?
         return List.of(Map.of("check_id", 887, "status", "PENDING"));
