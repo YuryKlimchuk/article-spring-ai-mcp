@@ -6,14 +6,7 @@
 
 Клиент звонит: «Пытаюсь открыть виртуальную карту, три раза нажал — ошибка». Саппорт открывает чат. Без MCP: DBeaver → копипаст в чат → Grafana → скриншот → снова чат. С MCP: один вопрос.
 
-| Тип | Название | Источник | Что делает |
-|---|---|---|---|
-| **Tool** | `getUserCards(userId)` | `product_db` | Активные карты и заявки пользователя |
-| **Tool** | `getApplicationSteps(applicationId)` | `product_db` | На каком шаге заявка упала |
-| **Tool** | `getRecentAppErrors(userId, minutes)` | OpenSearch | Ошибки в логах по пользователю |
-| **Tool** | `getPendingCompliance(userId)` | `backoffice_db` | Зависшие compliance-проверки |
-| **Resource** | `card-opening-flow` | — | Схема: заявка → KYC → скоринг → compliance → активация |
-| **Prompt** | `investigate-card-opening` | — | Структурирует диалог для саппорта |
+**Состав сервера:** `getUserCards`, `getApplicationSteps`, `getRecentAppErrors`, `getPendingCompliance` — tools; `card-opening-flow` — resource; `investigate-card-opening` — prompt.
 
 **Ход расследования:**
 
@@ -29,17 +22,7 @@
 
 Ночь. Alertmanager: `payment-service p99_latency = 5.2s` (порог 500ms). Хост получает вебхук и запускает расследование.
 
-| Тип | Название | Источник | Что делает |
-|---|---|---|---|
-| **Tool** | `getServiceMetrics(service, metric, minutes)` | Prometheus | p99_latency, db_connections_active |
-| **Tool** | `getPodRestarts(service, minutes)` | Kubernetes | Рестарты подов, OOMKilled |
-| **Tool** | `getBlockingSessions()` | `payments_db` | Кто кого блокирует |
-| **Tool** | `getSlowQueries(database, minutes, limit)` | `payments_db` | Топ тяжёлых запросов |
-| **Tool** | `getServiceErrors(service, minutes)` | OpenSearch | Ошибки в логах |
-| **Tool** | `getRecentDeploys(service)` | Jenkins | Последние деплои |
-| **Tool** | `createJiraTicket(project, summary, description)` | Jira | Создать тикет |
-| **Resource** | `payment-db-schema`, `alert-runbook-payment` | — | DDL таблиц + runbook алёрта |
-| **Prompt** | `auto-investigate-payment` | — | Структурирует авто-расследование |
+**Состав сервера:** `getServiceMetrics` (Prometheus), `getPodRestarts` (K8s), `getBlockingSessions`, `getSlowQueries` (БД), `getServiceErrors` (OpenSearch), `getRecentDeploys` (Jenkins), `createJiraTicket` (Jira) — tools; `payment-db-schema`, `alert-runbook-payment` — resources; `auto-investigate-payment` — prompt.
 
 **Ход расследования:**
 

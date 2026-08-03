@@ -9,16 +9,7 @@
 
 > 📦 **Source code:** [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server) · [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client)
 
-## Общая архитектура
-
-```
-Spring Boot App ──MCP Server── JSON-RPC ──┬── Claude Desktop
-                   (@McpTool,             ├── VS Code / Cursor
-                    @McpResource,         ├── Ваше приложение
-                    @McpPrompt)           └── Авто-расследование
-```
-
-Один MCP-сервер — любые клиенты. Ни строчки кода не дублируется.
+## Введение
 
 Вы просите LLM рассказать о новой версии Spring — она отвечает, что такой версии нет. Просите проверить тормоза на вашей БД — она не умеет. Причина одна: LLM изолирована от внешнего мира. Ей нужен контролируемый способ вызывать функции и получать актуальные данные.
 

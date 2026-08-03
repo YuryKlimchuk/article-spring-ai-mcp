@@ -1,6 +1,6 @@
 # Реализация на Spring Boot
 
-> **Код на GitHub:** [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server), [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client). Код ниже — скелет с заглушками, полная реализация в репозитории.
+> **Код на GitHub:** [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server), [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client). Код ниже — скелет с заглушками, полная реализация опущена для примера.
 
 Теперь код. Все tools, resources и промпты из сценариев.
 
