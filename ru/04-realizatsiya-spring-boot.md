@@ -187,38 +187,53 @@ public class McpResources {
         return List.of(
             // Сценарий 1: схема шагов
             McpServerFeatures.SyncResourceSpecification.builder()
-                .name("card-opening-flow")
-                .description("Схема шагов оформления карты.")
-                .mimeType("text/plain")
-                .handler(request -> """
-                    1. APPLICATION_CREATED → 2. KYC_CHECK → 3. SCORING
-                    → 4. COMPLIANCE_CHECK (back-office) → 5. ACTIVATION
-                    Если зависла на шаге 4: getApplicationSteps + getPendingCompliance
-                    """)
+                .resource(Resource.builder()
+                    .uri("card-opening-flow")
+                    .name("card-opening-flow")
+                    .description("Схема шагов оформления карты.")
+                    .mimeType("text/plain")
+                    .build())
+                .readHandler((exchange, request) -> new ReadResourceResult(List.of(
+                    new TextResourceContents(request.uri(), """
+                        1. APPLICATION_CREATED → 2. KYC_CHECK → 3. SCORING
+                        → 4. COMPLIANCE_CHECK (back-office) → 5. ACTIVATION
+                        Если зависла на шаге 4: getApplicationSteps + getPendingCompliance
+                        """, "text/plain")))
+                )
                 .build(),
 
             // Сценарий 2: схема БД
             McpServerFeatures.SyncResourceSpecification.builder()
-                .name("payment-db-schema")
-                .description("DDL таблиц transactions, settlements и индексы.")
-                .mimeType("text/plain")
-                .handler(request -> """
-                    CREATE TABLE transactions (id, status, batch_id, ...);
-                    CREATE INDEX idx_tx_batch_id ON transactions(batch_id);
-                    -- ВАЖНО: нет индекса на (batch_id, status)
-                    """)
+                .resource(Resource.builder()
+                    .uri("payment-db-schema")
+                    .name("payment-db-schema")
+                    .description("DDL таблиц transactions, settlements и индексы.")
+                    .mimeType("text/plain")
+                    .build())
+                .readHandler((exchange, request) -> new ReadResourceResult(List.of(
+                    new TextResourceContents(request.uri(), """
+                        CREATE TABLE transactions (id, status, batch_id, ...);
+                        CREATE INDEX idx_tx_batch_id ON transactions(batch_id);
+                        -- ВАЖНО: нет индекса на (batch_id, status)
+                        """, "text/plain")))
+                )
                 .build(),
 
             // Сценарий 2: runbook алёрта
             McpServerFeatures.SyncResourceSpecification.builder()
-                .name("alert-runbook-payment")
-                .description("Runbook для алёрта payment-high-latency.")
-                .mimeType("text/plain")
-                .handler(request -> """
-                    1. getServiceMetrics → 2. getPodRestarts → 3. getBlockingSessions
-                    → 4. getSlowQueries → 5. getRecentDeploys → 6. getServiceErrors
-                    → 7. createJiraTicket
-                    """)
+                .resource(Resource.builder()
+                    .uri("alert-runbook-payment")
+                    .name("alert-runbook-payment")
+                    .description("Runbook для алёрта payment-high-latency.")
+                    .mimeType("text/plain")
+                    .build())
+                .readHandler((exchange, request) -> new ReadResourceResult(List.of(
+                    new TextResourceContents(request.uri(), """
+                        1. getServiceMetrics → 2. getPodRestarts → 3. getBlockingSessions
+                        → 4. getSlowQueries → 5. getRecentDeploys → 6. getServiceErrors
+                        → 7. createJiraTicket
+                        """, "text/plain")))
+                )
                 .build()
         );
     }
@@ -234,39 +249,43 @@ public class McpPrompts {
         return List.of(
             // Сценарий 1: расследование проблемы с картой
             McpServerFeatures.SyncPromptSpecification.builder()
-                .name("investigate-card-opening")
-                .description("Расследовать проблему с открытием карты")
-                .addArgument("userId", "ID пользователя")
-                .addArgument("backOfficeCardId", "ID back-office")
-                .messages(messages -> List.of(
-                    new Message(MessageRole.USER, """
+                .prompt(Prompt.builder()
+                    .name("investigate-card-opening")
+                    .description("Расследовать проблему с открытием карты")
+                    .addArgument("userId", "ID пользователя")
+                    .addArgument("backOfficeCardId", "ID back-office")
+                    .build())
+                .promptHandler((exchange, request) -> new GetPromptResult(List.of(
+                    new Message(Role.USER, new TextContent("""
                         Клиент {userId} не может открыть карту.
                         Back-office: {backOfficeCardId}.
                         Используй схему из card-opening-flow.
                         1. getUserCards → 2. getApplicationSteps
                         → 3. getRecentAppErrors → 4. getPendingCompliance
-                        """)
-                ))
+                        """))
+                )))
                 .build(),
 
             // Сценарий 2: автоматическое расследование алёрта
             McpServerFeatures.SyncPromptSpecification.builder()
-                .name("auto-investigate-payment")
-                .description("Авто-расследование алёрта high-latency")
-                .addArgument("service", "Имя сервиса")
-                .addArgument("metric", "Название метрики")
-                .addArgument("threshold", "Пороговое значение")
-                .addArgument("currentValue", "Текущее значение")
-                .messages(messages -> List.of(
-                    new Message(MessageRole.USER, """
+                .prompt(Prompt.builder()
+                    .name("auto-investigate-payment")
+                    .description("Авто-расследование алёрта high-latency")
+                    .addArgument("service", "Имя сервиса")
+                    .addArgument("metric", "Название метрики")
+                    .addArgument("threshold", "Пороговое значение")
+                    .addArgument("currentValue", "Текущее значение")
+                    .build())
+                .promptHandler((exchange, request) -> new GetPromptResult(List.of(
+                    new Message(Role.USER, new TextContent("""
                         🚨 {service} {metric} = {currentValue} (порог: {threshold})
                         Проведи расследование по runbook.
                         🔒 ПЕРВОПРИЧИНА: ...
                         📊 ДОКАЗАТЕЛЬСТВА: ...
                         ✅ ACTION PLAN: ...
                         🎫 Тикет в Jira: ...
-                        """)
-                ))
+                        """))
+                )))
                 .build()
         );
     }

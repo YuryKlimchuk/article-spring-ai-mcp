@@ -269,7 +269,7 @@ sequenceDiagram
     K-->>M: 3 рестарта, OOMKilled, 00:13
     M-->>H: результат
     H->>L: рестарты обнаружены
-    Note over L: после рестарта одного из подов<br/>его batch settlement не завершился<br/>корректно — лок остался висеть.<br/>За 2 часа блокировка накопила 55<br/>ожидающих сессий и исчерпала pool
+    Note over L: рестарты были в 00:13, алерт в 02:13 —<br/>нужно понять, что происходило эти 2 часа
 
     Note over L: Шаг 3: смотрим на connection pool
     L-->>H: call getServiceMetrics("payment-service", "db_connections_active", 15)
