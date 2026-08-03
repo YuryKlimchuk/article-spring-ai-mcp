@@ -169,7 +169,7 @@ WHERE created_at > NOW() - INTERVAL '30 days';
   - `curl .../alert/ask?mcp=false` → *«Я не имею доступа к вашей базе данных, но могу предположить...»* (hallucination или общие слова)
   - `curl .../alert/ask?mcp=true` → полный диагноз: блокировка pid 8732, 55 ожидающих сессий, запрос-виновник, action plan
   - Разница в одном окне: без MCP — гадание, с MCP — факты и конкретный план действий.
-- **GitHub-репозиторий** с полным кодом и Docker Compose (ссылка).
+- **GitHub-репозиторий** с полным кодом: [server](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/server), [client](https://github.com/YuryKlimchuk/article-spring-ai-mcp/tree/main/client).
 
 ### 5. Итоги (~250 слов) — выводы + что дальше
 

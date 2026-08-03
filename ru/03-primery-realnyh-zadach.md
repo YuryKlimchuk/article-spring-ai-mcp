@@ -1,576 +1,82 @@
 # Примеры реальных задач
 
-Давайте применим теорию из предыдущей главы к практическим сценариям. Представьте банковский ретейл-бизнес: мобильное приложение, пластиковые и виртуальные карты, платежи, переводы. За кулисами — микросервисы.
-
-## Контекст: система из трёх микросервисов
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        БАНКОВСКИЙ РЕТЕЙЛ                            │
-│                                                                     │
-│  ┌──────────────────┐  ┌──────────────────────┐  ┌───────────────┐ │
-│  │  payment-service │  │   product-service    │  │ back-office-  │ │
-│  │                  │  │                      │  │   service     │ │
-│  ├──────────────────┤  ├──────────────────────┤  ├───────────────┤ │
-│  │ Платежи          │  │ Жизненный цикл       │  │ Compliance    │ │
-│  │ Эквайринг        │  │ продуктов            │  │ Одобрения     │ │
-│  │ Переводы         │  │ Заявки на карты      │  │ Ручные решения│ │
-│  ├──────────────────┤  ├──────────────────────┤  ├───────────────┤ │
-│  │    payments_db   │  │   product_db      │  │ backoffice_db │ │
-│  └──────────────────┘  └──────────────────────┘  └───────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-Каждый сервис владеет своей базой данных. Никакого прямого доступа между сервисами — только через API. А теперь представьте: вы расследуете инцидент. Чтобы понять, что случилось, вам нужны данные из трёх разных БД, метрики из Grafana и логи из OpenSearch. Без MCP это выглядит так: вы открываете DBeaver, выполняете SQL-запрос, копируете результат, вставляете в чат с LLM. Открываете Grafana, делаете скриншот или копируете цифры — снова вставляете в чат. Открываете OpenSearch, ищете ошибки, копируете, вставляете. LLM анализирует и просит уточнить ещё что-то — вы повторяете круг заново. С MCP вы просто задаёте вопрос в чате, а LLM сама идёт во все системы и собирает факты.
+Возьмём банковский ритейл: три сервиса (`payment-service`, `product-service`, `back-office-service`), каждый со своей БД, общаются через API. Два сценария на одном MCP-сервере.
 
 ## Сценарий 1: Саппорт расследует проблему с картой
 
-### Что происходит
+Клиент звонит: «Пытаюсь открыть виртуальную карту, три раза нажал — ошибка». Саппорт открывает чат. Без MCP: DBeaver → копипаст в чат → Grafana → скриншот → снова чат. С MCP: один вопрос.
 
-Клиент звонит в банк: «Пытаюсь открыть виртуальную карту в приложении, три раза нажал — каждый раз ошибка на последнем шаге. Что с моей картой?»
+| Тип | Название | Источник | Что делает |
+|---|---|---|---|
+| **Tool** | `getUserCards(userId)` | `product_db` | Активные карты и заявки пользователя |
+| **Tool** | `getApplicationSteps(applicationId)` | `product_db` | На каком шаге заявка упала |
+| **Tool** | `getRecentAppErrors(userId, minutes)` | OpenSearch | Ошибки в логах по пользователю |
+| **Tool** | `getPendingCompliance(userId)` | `backoffice_db` | Зависшие compliance-проверки |
+| **Resource** | `card-opening-flow` | — | Схема: заявка → KYC → скоринг → compliance → активация |
+| **Prompt** | `investigate-card-opening` | — | Структурирует диалог для саппорта |
 
-Саппорт открывает чат. У него нет доступа к БД, он не умеет читать логи и не знает, как устроен back-office. Но у него есть MCP.
+**Ход расследования:**
 
-### Кто что делает
+1. Саппорт выбирает prompt `investigate-card-opening` с параметрами `userId=user_45678`, `backOfficeCardId=bo_887`. Хост подгружает ресурс `card-opening-flow`.
+2. LLM вызывает `getUserCards` → в БД нет активных карт, заявка `app_9912` на шаге 4/5.
+3. LLM вызывает `getApplicationSteps` → шаг `COMPLIANCE_CHECK` упал с таймаутом.
+4. LLM вызывает `getRecentAppErrors` + `getPendingCompliance` → 3 таймаута BackOfficeServiceClient, проверка #887 висит PENDING.
+5. LLM отвечает: «Заявка зависла на compliance. Дежурная команда уже поднята. Клиенту ничего делать не нужно.»
 
-```
-                       ┌──────────┐
-                       │  САППОРТ │
-                       └────┬─────┘
-                            │ «Клиент user_45678 не может открыть карту»
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                     MCP HOST (Чат)                            │
-│                                                              │
-│  Саппорт выбирает prompt из списка:                           │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  PROMPT: investigate-card-opening (с MCP-сервера)     │    │
-│  │  ┌──────────────────────────────────────────────┐    │    │
-│  │  │ userId = user_45678                          │    │    │
-│  │  │ backOfficeCardId = bo_887                    │    │    │
-│  │  │                                              │    │    │
-│  │  │ «Проверь статус заявки, найди ошибки,        │    │    │
-│  │  │  объясни причину и скажи, что делать»        │    │    │
-│  │  └──────────────────────────────────────────────┘    │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                              │
-│  Хост автоматически подгружает ресурс:                        │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  RESOURCE: card-opening-flow (с MCP-сервера)    │    │
-│  │  ┌──────────────────────────────────────────────┐    │    │
-│  │  │ Заявка → KYC → Скоринг → Compliance →        │    │    │
-│  │  │ Активация                                    │    │    │
-│  │  │                                              │    │    │
-│  │  │ На шаге Compliance заявка уходит в            │    │    │
-│  │  │ back-office → LLM понимает: нужны              │    │    │
-│  │  │ getApplicationSteps + getPendingCompliance   │    │    │
-│  │  └──────────────────────────────────────────────┘    │    │
-│  └─────────────────────────────────────────────────────┘    │
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│                        MCP SERVER                             │
-│                                                              │
-│  ┌───────────────┐  ┌──────────────┐  ┌─────────────────┐   │
-│  │ getUserCards  │  │ getRecentApp  │  │ getPending      │   │
-│  │               │  │    Errors     │  │ Compliance      │   │
-│  │ product_db │  │  OpenSearch   │  │ backoffice_db   │   │
-│  └───────┬───────┘  └──────┬───────┘  └────────┬────────┘   │
-│          │                 │                    │            │
-│  ┌───────┴─────────────────┴────────────────────┴────────┐  │
-│  │          getApplicationSteps                           │  │
-│  │          product_db                                 │  │
-│  └───────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Как разворачивается диалог
-
-```mermaid
-sequenceDiagram
-    participant S as 👤 Саппорт
-    participant H as MCP Host
-    participant L as 🤖 LLM
-    participant M as MCP Server
-    participant PG as PostgreSQL
-    participant OS as OpenSearch
-
-    S->>H: выбирает prompt investigate-card-opening<br/>userId=user_45678, backOfficeCardId=bo_887
-    H->>M: prompts/get investigate-card-opening(userId, backOfficeCardId)
-    M-->>H: сообщения промпта с подставленными параметрами
-    H->>M: resources/read card-opening-flow
-    M-->>H: схема шагов заявки
-    Note over H: ресурс показывает: на шаге Compliance<br/>нужен back-office → LLM поймёт,<br/>какие tools использовать
-    H->>L: запрос + список tools + промпт + ресурсы
-
-    Note over L: из схемы понятно: заявка на шаге 4/5 —<br/>нужно проверить getUserCards
-    L-->>H: call getUserCards("user_45678")
-    H->>M: tools/call getUserCards
-    M->>PG: SELECT * FROM mcp_api.v_card_orders
-    PG-->>M: нет активных карт, заявка app_9912 на шаге 4/5
-    M-->>H: результат
-    H->>L: результат tool
-
-    Note over L: заявка на шаге 4/5 — нужно узнать<br/>детали по getApplicationSteps
-    L-->>H: call getApplicationSteps("app_9912")
-    H->>M: tools/call getApplicationSteps
-    M->>PG: SELECT * FROM mcp_api.v_application_steps
-    PG-->>M: COMPLIANCE_CHECK → FAILED, таймаут
-    M-->>H: результат
-    H->>L: результат tool
-
-    Note over L: compliance-шаг упал — проверим<br/>логи и pending compliance
-    L-->>H: call getRecentAppErrors("user_45678", 15)
-    H->>M: tools/call
-    M->>OS: поиск по логам
-    OS-->>M: 3 ошибки: BackOfficeServiceClient timeout
-    M-->>H: результат
-    H->>L: результат tool
-
-    Note over L: LLM решает: вызвать getPendingCompliance
-    L-->>H: call getPendingCompliance("user_45678")
-    H->>M: tools/call
-    M->>PG: SELECT * FROM mcp_api.v_pending_compliance
-    PG-->>M: проверка #887 → PENDING, 3 мин назад
-    M-->>H: результат
-    H->>L: результат tool
-
-    L-->>H: финальный ответ
-    H-->>S: «Заявка зависла на проверке compliance — back-office не отвечает. Дежурная команда уже поднята по алёрту, после восстановления заявка дообработается. Клиенту ничего делать не нужно.»
-```
-
-### Что здесь важно
-
-```
-                КТО ПРИНЯЛ РЕШЕНИЕ?
-
-     Tool ←── LLM               «Я знаю, что делать —
-                                  дайте мне вызвать функцию»
-
-     Resource ←── Host           «LLM нужен контекст —
-                                  давайте подгрузим схему»
-
-     Prompt ←── Пользователь     «Хочу расследовать проблему
-                                  с картой — выбираю сценарий»
-```
-
-Саппорт не писал SQL, не открывал логи, не дёргал разработчиков. Он задал вопрос на естественном языке — LLM сама прошла по цепочке: проверила заявку → нашла шаг падения → обнаружила ошибки в логах → определила первопричину.
-
----
+Саппорт задал вопрос — LLM прошла цепочку: карты → шаги → ошибки → compliance.
 
 ## Сценарий 2: Алёрт — система сама пошла расследовать
 
-### Что происходит
+Ночь. Alertmanager: `payment-service p99_latency = 5.2s` (порог 500ms). Хост получает вебхук и запускает расследование.
 
-Ночь. Никого в офисе. Alertmanager фиксирует: `payment-service p99_latency` выросла с 200ms до 5.2s. Порог — 500ms. Алёрт уровня critical.
+| Тип | Название | Источник | Что делает |
+|---|---|---|---|
+| **Tool** | `getServiceMetrics(service, metric, minutes)` | Prometheus | p99_latency, db_connections_active |
+| **Tool** | `getPodRestarts(service, minutes)` | Kubernetes | Рестарты подов, OOMKilled |
+| **Tool** | `getBlockingSessions()` | `payments_db` | Кто кого блокирует |
+| **Tool** | `getSlowQueries(database, minutes, limit)` | `payments_db` | Топ тяжёлых запросов |
+| **Tool** | `getServiceErrors(service, minutes)` | OpenSearch | Ошибки в логах |
+| **Tool** | `getRecentDeploys(service)` | Jenkins | Последние деплои |
+| **Tool** | `createJiraTicket(project, summary, description)` | Jira | Создать тикет |
+| **Resource** | `payment-db-schema`, `alert-runbook-payment` | — | DDL таблиц + runbook алёрта |
+| **Prompt** | `auto-investigate-payment` | — | Структурирует авто-расследование |
 
-```
-┌────────────────────────────────────────────────────────────┐
-│                      ALERTMANAGER                          │
-│                                                            │
-│  🚨 ALERT: payment-high-latency                            │
-│  📊 value: p99_latency = 5.2s (threshold: 500ms)          │
-│  🏷️  labels: {service: payment-service, severity: critical}│
-│  ⏰ time: 02:13 UTC                                        │
-└────────────────────────┬───────────────────────────────────┘
-                         │ webhook
-                         ▼
-```
+**Ход расследования:**
 
-Никто не жмёт кнопок. Система сама запускает расследование.
+1. Alertmanager отправляет вебхук. Хост подгружает ресурсы `payment-db-schema` и `alert-runbook`, применяет prompt `auto-investigate-payment`.
+2. LLM вызывает `getServiceMetrics` → p99_latency = 5.2s (рост с 200ms).
+3. LLM вызывает `getPodRestarts` → 3 рестарта с OOMKilled в 00:13.
+4. LLM вызывает `getBlockingSessions` → pid 8732 держит RowExclusiveLock, 55 сессий ждут.
+5. LLM вызывает `getSlowQueries` → `UPDATE transactions SET status='SETTLED'` — mean_time 4.8s.
+6. LLM вызывает `getServiceErrors` → 450× «could not obtain lock».
+7. LLM вызывает `createJiraTicket` → тикет PAY-8872 создан.
 
-### Кто что делает
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      MCP HOST (Авто-расследование)                │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │  PROMPT: auto-investigate-payment                           │  │
-│  │  «Сработал алёрт high-latency. Проверь метрики, БД,         │  │
-│  │   логи, деплои. Найди первопричину. Предложи action.        │  │
-│  │   Формат: диагноз → доказательства → решение.»              │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
-│  │ RESOURCE:            │  │ RESOURCE:                         │  │
-│  │ payment-db-schema    │  │ alert-runbook-payment             │  │
-│  │                      │  │                                   │  │
-│  │ DDL таблиц:          │  │ # High Latency Runbook            │  │
-│  │ • transactions       │  │ 1. Проверить pg_stat_statements  │  │
-│  │ • settlements        │  │ 2. Проверить pg_stat_activity    │  │
-│  │ • payment_methods    │  │ 3. Проверить последние деплои    │  │
-│  │ + индексы            │  │ 4. Проверить connection pool     │  │
-│  └─────────────────────┘  └──────────────────────────────────┘  │
-└──────────────────────────────┬───────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                          MCP SERVER                               │
-│                                                                  │
-│  ┌─────────────┐ ┌───────────────┐ ┌──────────────┐             │
-│  │ getService  │ │ getSlow       │ │ getBlocking  │             │
-│  │ Metrics     │ │ Queries       │ │ Sessions     │             │
-│  │             │ │               │ │              │             │
-│  │ Prometheus  │ │ pg_stat_      │ │ pg_stat_     │             │
-│  │ API         │ │ statements    │ │ activity     │             │
-│  └─────────────┘ └───────────────┘ └──────────────┘             │
-│                                                                  │
-│  ┌─────────────┐ ┌───────────────┐ ┌──────────────┐             │
-│  │ getRecent   │ │ getService    │ │ getPod       │             │
-│  │ Deploys     │ │ Errors        │ │ Restarts     │             │
-│  │             │ │               │ │              │             │
-│  │ Jenkins API │ │ OpenSearch    │ │ Kubernetes   │             │
-│  └─────────────┘ └───────────────┘ └──────────────┘             │
-│                                                                  │
-│  ┌─────────────┐                                                 │
-│  │ createJira  │                                                 │
-│  │ Ticket      │                                                 │
-│  │             │                                                 │
-│  │ Jira API    │                                                 │
-│  └─────────────┘                                                 │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Как разворачивается расследование
-
-```mermaid
-sequenceDiagram
-    participant A as 🚨 Alertmanager
-    participant H as MCP Host
-    participant L as 🤖 LLM
-    participant M as MCP Server
-    participant P as Prometheus
-    participant PG as PostgreSQL
-    participant OS as OpenSearch
-    participant J as Jenkins
-    participant K as Kubernetes
-    participant JR as Jira
-
-    A->>H: webhook: payment-high-latency
-    H->>M: resources/read payment-db-schema + alert-runbook
-    M-->>H: DDL схемы + содержимое runbook
-    H->>H: применяет Prompt: auto-investigate-payment
-    H->>L: запрос алёрта + tools + ресурсы
-
-    Note over L: Шаг 1: проверяем метрики
-    L-->>H: call getServiceMetrics("payment-service", "p99_latency", 15)
-    H->>M: tools/call
-    M->>P: запрос метрик
-    P-->>M: p99_latency: 180ms → 5.2s в 02:13
-    M-->>H: результат
-    H->>L: метрики получены
-
-    Note over L: Шаг 2: проверяем рестарты
-    L-->>H: call getPodRestarts("payment-service", 120)
-    H->>M: tools/call
-    M->>K: запрос рестартов подов
-    K-->>M: 3 рестарта, OOMKilled, 00:13
-    M-->>H: результат
-    H->>L: рестарты обнаружены
-    Note over L: рестарты были в 00:13, алерт в 02:13 —<br/>нужно понять, что происходило эти 2 часа
-
-    Note over L: Шаг 3: смотрим на connection pool
-    L-->>H: call getServiceMetrics("payment-service", "db_connections_active", 15)
-    H->>M: tools/call
-    M->>P: запрос метрик
-    P-->>M: connections: 97/100
-    M-->>H: результат
-    H->>L: connections почти исчерпаны
-
-    Note over L: Шаг 4: проверяем блокировки
-    L-->>H: call getBlockingSessions()
-    H->>M: tools/call
-    M->>PG: SELECT * FROM mcp_api.v_blocking_sessions
-    PG-->>M: pid 8732 держит RowExclusiveLock<br/>55 сессий ждут ShareLock
-    M-->>H: результат
-    H->>L: обнаружена блокировка!
-
-    Note over L: Шаг 5: кто виновник?
-    L-->>H: call getSlowQueries("payment-service", 15, 10)
-    H->>M: tools/call
-    M->>PG: SELECT * FROM mcp_api.v_slow_queries
-    PG-->>M: UPDATE transactions SET status='SETTLED' — mean_time_ms 4800
-    M-->>H: результат
-    H->>L: запрос-виновник найден
-
-    Note over L: Шаг 6: проверяем деплои
-    L-->>H: call getRecentDeploys("payment-service")
-    H->>M: tools/call
-    M->>J: запрос деплоев
-    J-->>M: v2.7.0, 14 часов назад — не коррелирует
-    M-->>H: результат
-    H->>L: деплой не причина
-
-    Note over L: Шаг 7: смотрим логи
-    L-->>H: call getServiceErrors("payment-service", 15)
-    H->>M: tools/call
-    M->>OS: запрос логов
-    OS-->>M: 450× "could not obtain lock"<br/>12× "connection pool exhausted"
-    M-->>H: результат
-    H->>L: ошибки подтверждают блокировку
-
-    Note over L: LLM формирует диагноз
-    L-->>H: полный отчёт с action plan
-    H-->>A: результат в Slack #incidents
-
-    Note over L: LLM решает: создать тикет
-    L-->>H: call createJiraTicket("PAY", "payment-high-latency", отчёт)
-    H->>M: tools/call
-    M->>JR: POST /rest/api/2/issue
-    JR-->>M: тикет PAY-8872 создан
-    M-->>H: результат
-    H->>L: тикет создан
-```
-
-### Итоговый отчёт LLM
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│  🔒 ПЕРВОПРИЧИНА: OOM → рестарты → исчерпание                   │
-│     connection pool → блокировка таблицы transactions            │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ 📊 ДОКАЗАТЕЛЬСТВА                                            │ │
-│  │                                                              │ │
-│  │  • 00:13 — 3 пода payment-service упали с OOMKilled:         │ │
-│  │    использование памяти 1.98Gi из лимита 2Gi                 │ │
-│  │  • При рестарте пода его batch settlement (pid 8732)         │ │
-│  │    не завершился корректно — лок на transactions повис       │ │
-│  │  • 00:13–02:13 — за 2 часа блокировка накопила 55           │ │
-│  │    ожидающих сессий и исчерпала connection pool              │ │
-│  │  • В логах: 3× «java.lang.OutOfMemoryError: Java heap space» │ │
-│  │  • p99_latency: 180ms → 5.2s (рост в 29 раз)                │ │
-│  │  • pid 8732 держит RowExclusiveLock уже > 5 минут            │ │
-│  │  • 55 сессий заблокированы, ждут освобождения                │ │
-│  │  • Connection pool: 97/100 (исчерпан)                        │ │
-│  │  • Запрос-виновник: UPDATE transactions SET status='SETTLED' │ │
-│  │    WHERE batch_id = ? — batch settlement                    │ │
-│  │  • 450 ошибок «could not obtain lock» за 15 минут            │ │
-│  │  • Последний деплой 14 часов назад — не коррелирует          │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ ✅ ACTION PLAN                                               │ │
-│  │                                                              │ │
-│  │  1. SELECT pg_terminate_backend(8732)                        │ │
-│  │     Убить блокирующую сессию (batch settlement               │ │
-│  │     перезапустится автоматически)                            │ │
-│  │                                                              │ │
-│  │  2. kubectl set resources deployment/payment-service         │ │
-│  │     --limits=memory=4Gi                                      │ │
-│  │     Увеличить memory limit, чтобы избежать OOM               │ │
-│  │                                                              │ │
-│  │  3. Проверить JVM heap settings: изменить -Xms2g -Xmx2g      │ │
-│  │     на -Xms3g -Xmx3g (80% от memory limit)                   │ │
-│  │                                                              │ │
-│  │  4. CREATE INDEX CONCURRENTLY                                 │ │
-│  │     ON transactions(batch_id)                                │ │
-│  │     WHERE status = 'PENDING';                                │ │
-│  │     Ускорит batch settlement в 10+ раз                       │ │
-│  │                                                              │ │
-│  │  5. Увеличить connection pool с 100 до 150                   │ │
-│  │     Защита от исчерпания при следующем всплеске              │ │
-│  │                                                              │ │
-│  │  6. Расследовать размер batch_id 8872 — возможно,            │ │
-│  │     слишком много записей в одном батче                      │ │
-│  └─────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│  📝 Результат отправлен в #incidents Slack                       │
-│  🎫 Тикет PAY-8872 создан в Jira через createJiraTicket          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Что здесь важно
-
-```
-    БЕЗ УЧАСТИЯ ЧЕЛОВЕКА:
-
-    Alertmanager ──→ MCP Host ──→ LLM ──→ 7 тулов ──→ диагноз + action
-
-    Система:
-    • Сама получила алёрт
-    • Сама опросила Prometheus / Kubernetes / PostgreSQL / OpenSearch / Jenkins
-    • Сама создала тикет в Jira
-    • Сама сопоставила факты и нашла первопричину
-    • Сама предложила конкретные команды для исправления
-    • Сама отправила результат туда, где его увидят
-```
-
-Обратите внимание: LLM не просто ответила «у вас проблемы с БД». Она прошла по цепочке доказательств — от алёрта до конкретного pid и запроса. Это возможно только потому, что MCP дал ей доступ к реальным данным, а не к документации трёхлетней давности.
-
----
+LLM выдала диагноз: OOM → рестарты → connection pool исчерпан → блокировка pid 8732. Action plan: `pg_terminate_backend(8732)`, memory limit 4Gi, индекс на `transactions(batch_id)`, connection pool 150.
 
 ## Безопасность: почему LLM не видит сырые данные
 
-Вы могли заметить во всех диаграммах странные названия: `mcp_api.v_blocking_sessions`, `mcp_api.v_slow_queries`. Это не опечатка. Это архитектурное решение.
+> Прежде чем перейти к реализации — важное архитектурное решение.
 
-### Проблема
+Названия вроде `mcp_api.v_blocking_sessions` — не опечатка, а архитектурное решение. Схема `mcp_api` с VIEW, доступ под ролью `mcp_readonly` только на SELECT:
 
-У LLM не должно быть прямого доступа к таблицам с данными клиентов. Номера карт, email-адреса, IP, суммы транзакций — всё это PII, которое регулируется GDPR, PCI DSS и внутренними политиками банка.
+```sql
+-- Роль только на чтение, public-схема закрыта
+CREATE ROLE mcp_readonly WITH LOGIN PASSWORD '***' CONNECTION LIMIT 5;
+GRANT SELECT ON ALL TABLES IN SCHEMA mcp_api TO mcp_readonly;
 
-### Решение: схема mcp_api
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                   PostgreSQL (payments_db)                       │
-│                                                                  │
-│  ┌──────────────────────────────────────┐                       │
-│  │           schema: public              │  ← LLM НЕ ВИДИТ       │
-│  │                                      │                       │
-│  │  transactions                        │                       │
-│  │  ├─ id                               │                       │
-│  │  ├─ card_number       ← PII          │                       │
-│  │  ├─ card_holder       ← PII          │                       │
-│  │  ├─ ip_address        ← PII          │                       │
-│  │  ├─ device_fingerprint ← PII         │                       │
-│  │  ├─ amount                           │                       │
-│  │  ├─ status                           │                       │
-│  │  └─ ...                              │                       │
-│  │                                      │                       │
-│  │  settlements                         │                       │
-│  │  payment_methods                     │                       │
-│  └──────────────────────────────────────┘                       │
-│                                                                  │
-│  ┌──────────────────────────────────────┐                       │
-│  │          schema: mcp_api              │  ← LLM ВИДИТ ТОЛЬКО   │
-│  │                                      │     ЭТО                │
-│  │  v_transactions (VIEW)               │                       │
-│  │  ├─ id                               │                       │
-│  │  ├─ status                           │                       │
-│  │  ├─ amount                           │                       │
-│  │  ├─ merchant_category                │                       │
-│  │  ├─ merchant_masked   ← OZ***        │  PII замаскирован     │
-│  │  ├─ batch_id                         │                       │
-│  │  ├─ settling_status                  │                       │
-│  │  ├─ error_code                       │                       │
-│  │  └─ WHERE created_at > NOW() - 30d   │  Ограничение по дате  │
-│  │                                      │                       │
-│  │  v_blocking_sessions (VIEW)          │                       │
-│  │  ├─ blocked_pid                      │                       │
-│  │  ├─ blocked_query_short ← 200 симв.  │  Запросы обрезаны     │
-│  │  ├─ blocking_pid                     │                       │
-│  │  ├─ blocking_duration                │                       │
-│  │  └─ WHERE datname = 'payments_db'    │  Только своя БД       │
-│  │                                      │                       │
-│  │  v_slow_queries (VIEW)               │                       │
-│  │  ├─ query_short ← 500 симв.          │                       │
-│  │  ├─ calls                            │                       │
-│  │  ├─ mean_time_ms                     │                       │
-│  │  ├─ total_time_ms                    │                       │
-│  │  └─ disk_read_kb                     │                       │
-│  └──────────────────────────────────────┘                       │
-└─────────────────────────────────────────────────────────────────┘
+CREATE VIEW mcp_api.v_blocking_sessions AS
+SELECT blocked.pid, LEFT(blocked.query, 200) AS blocked_query_short,
+       blocking.pid AS blocking_pid
+FROM pg_stat_activity blocked
+JOIN pg_stat_activity blocking
+    ON pg_blocking_pids(blocked.pid) @> ARRAY[blocking.pid]
+WHERE blocked.wait_event_type = 'Lock' AND blocked.datname = 'payments_db';
 ```
 
-Аналогичные VIEW создаются в `product_db` (`v_card_orders`, `v_application_steps`) и `backoffice_db` (`v_pending_compliance`) — везде с маскировкой PII и ограничением по датам.
+Аналогичные VIEW в `product_db` и `backoffice_db` — с маскировкой PII и ограничением по датам.
 
-### Модель доступа
-
-```
-                        ┌───────────────┐
-                        │      LLM      │
-                        │  Видит только │
-                        │  то, что Tool │
-                        │  решил вернуть│
-                        └───────┬───────┘
-                                │ JSON-RPC
-                        ┌───────┴───────┐
-                        │  MCP Server   │
-                        │               │
-                        │  User:        │
-                        │  mcp_readonly │
-                        │               │
-                        │  GRANT:       │
-                        │  SELECT on    │
-                        │  mcp_api.*    │
-                        │               │
-                        │  REVOKE:      │
-                        │  public.*     │
-                        │  pg_catalog.* │
-                        │               │
-                        │  Лимит:       │
-                        │  5 connections│
-                        └───────┬───────┘
-                                │ JDBC
-                        ┌───────┴───────┐
-                        │  PostgreSQL   │
-                        │               │
-                        │  mcp_api.*    │
-                        │  (только      │
-                        │   VIEW)       │
-                        │               │
-                        │  public.*     │
-                        │  (недоступна) │
-                        └───────────────┘
-```
-
-### Что даёт каждый уровень
-
-```
-┌─────────────────────┬──────────────────────────────────────────┐
-│ Уровень защиты       │ Что предотвращает                        │
-├─────────────────────┼──────────────────────────────────────────┤
-│ VIEW с маскировкой  │ LLM не видит PII: номера карт, email,    │
-│                     │ IP, паспортные данные                     │
-├─────────────────────┼──────────────────────────────────────────┤
-│ VIEW с фильтрацией  │ LLM не получает дамп всей БД. Только     │
-│                     │ последние 30 дней. Только обрезанные      │
-│                     │ сообщения об ошибках                      │
-├─────────────────────┼──────────────────────────────────────────┤
-│ Только SELECT       │ LLM не может INSERT/UPDATE/DELETE/TRUNCATE│
-│                     │ Даже если кто-то скомпрометирует сервер   │
-├─────────────────────┼──────────────────────────────────────────┤
-│ REVOKE на public    │ LLM не видит сырые таблицы. Только VIEW   │
-├─────────────────────┼──────────────────────────────────────────┤
-│ CONNECTION LIMIT    │ Защита от исчерпания соединений. Даже     │
-│                     │ при баге в MCP-сервере БД не упадёт       │
-├─────────────────────┼──────────────────────────────────────────┤
-│ log_statement       │ Все запросы от mcp_readonly пишутся в лог.│
-│                     │ Полный аудит: кто, когда, что запросил    │
-└─────────────────────┴──────────────────────────────────────────┘
-```
-
-### Почему это важно именно для MCP
-
-Обычный REST API тоже может маскировать PII и ограничивать доступ. Но MCP добавляет уникальный риск: **LLM сама решает, какие Tool вызвать и какие параметры передать**. Вы не контролируете последовательность вызовов. LLM может, теоретически, вызвать тулы в таком порядке и с такими параметрами, которые вы не предусмотрели.
-
-Защита на уровне VIEW означает: что бы LLM ни придумала — она физически не может прочитать `card_number` или удалить строку из `transactions`. Безопасность здесь не «мы надеемся, что LLM будет хорошей», а «мы спроектировали систему так, что у LLM нет выбора».
+**Почему это важно именно для MCP.** Обычный REST API тоже маскирует PII. Но MCP добавляет уникальный риск: LLM сама решает, какие Tool вызвать и с какими параметрами. Защита на уровне VIEW означает: что бы LLM ни придумала — она физически не может прочитать `card_number` или удалить строку. Не «надеемся, что LLM будет хорошей», а «спроектировали так, что у LLM нет выбора».
 
 ---
 
-## Сравнение сценариев
-
-```
-                    СЦЕНАРИЙ 1                    СЦЕНАРИЙ 2
-                    ──────────                    ──────────
-
-  Кто запустил?     Саппорт                       Alertmanager (webhook)
-
-  Цель              Ответить клиенту              Найти и исправить проблему
-
-  Tool              4 (БД + логи)                 7 (БД + метрики +
-                                                   K8s + логи + деплои
-                                                   + Jira)
-
-  Resource          Схема шагов заявки            DDL-схема + Runbook
-
-  Prompt            investigate-card-opening        auto-investigate-payment
-
-  Результат         «Заявка зависла на            «🔒 pid 8732 →
-                     compliance, ждите»            pg_terminate_backend +
-                                                   индекс + pool»
-
-  Ключевое          Человек + LLM =               Система + LLM =
-  отличие           быстрее, чем человек          расследование без
-                     в одиночку                    участия человека
-```
-
-Оба сценария работают на одном MCP-сервере. Один набор Tool, Resource и Prompt обслуживает и ручные расследования саппорта, и автоматические ответы на алёрты. Именно в этом суть MCP: один сервер — разные потребители.
-
----
-
-Теперь, когда мы увидели, как MCP выглядит на практике, пора перейти к реализации. В следующей главе мы разберём ключевые фрагменты кода — tools, resources и prompts, которые вы только что видели на диаграммах.
+Оба сценария работают на одном сервере — меняется только инициатор взаимодействия. Эти же Tool и Resource мы сейчас реализуем в коде: каждый из них — 10–15 строк на Spring Boot.
